@@ -1,0 +1,158 @@
+version: "3.8"
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: lite-vod-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lite_vod}
+      MYSQL_USER: ${MYSQL_USER:-vod}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vod}
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./sql/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - lite-vod
+
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: lite-vod-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-vod}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-vod}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - lite-vod
+
+  minio:
+    image: minio/minio:latest
+    container_name: lite-vod-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - lite-vod
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: lite-vod-minio-init
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 1; done
+        mc mb -p local/vod
+    networks:
+      - lite-vod
+
+  vod-api:
+    build:
+      context: ./vod-api
+    container_name: lite-vod-api
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lite_vod}
+      MYSQL_USER: ${MYSQL_USER:-vod}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vod}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-vod}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-vod}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: vod
+    ports:
+      - "8080:8080"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio:
+        condition: service_started
+    networks:
+      - lite-vod
+
+  vod-worker:
+    build:
+      context: ./vod-worker
+    container_name: lite-vod-worker
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-lite_vod}
+      MYSQL_USER: ${MYSQL_USER:-vod}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-vod}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USER: ${RABBITMQ_USER:-vod}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-vod}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_PUBLIC_ENDPOINT: http://localhost:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET: vod
+      # 默认打到 api 测试接收端；可改成 webhook.site 或业务真实地址
+      VOD_CALLBACK_URL: ${VOD_CALLBACK_URL:-http://vod-api:8080/vod/callback/test}
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      vod-api:
+        condition: service_started
+    networks:
+      - lite-vod
+
+  nginx:
+    image: nginx:alpine
+    container_name: lite-vod-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/html:/usr/share/nginx/html:ro
+    depends_on:
+      - vod-api
+    networks:
+      - lite-vod
+
+volumes:
+  mysql_data:
+  rabbitmq_data:
+  minio_data:
+
+networks:
+  lite-vod:
+    driver: bridge

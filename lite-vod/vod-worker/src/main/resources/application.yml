@@ -1,0 +1,62 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: vod-worker
+  datasource:
+    url: jdbc:mysql://${MYSQL_HOST:192.168.150.104}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:lite_vod}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER:root}
+    password: ${MYSQL_PASSWORD:1234}
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+      connection-timeout: 30000
+  rabbitmq:
+    host: ${RABBITMQ_HOST:192.168.150.104}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USER:root}
+    password: ${RABBITMQ_PASSWORD:1234}
+    listener:
+      simple:
+        # 手动 ack：消费成功 / 永久失败才 ack，否则 requeue 让 MQ 重投
+        acknowledge-mode: manual
+        # 每 Worker 容器并发 1~2，避免 CPU 打满拖垮同机 API
+        concurrency: ${WORKER_CONCURRENCY:1}
+        # 单条消息处理失败时先 requeue 给 MQ 重试
+        default-requeue-rejected: true
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://192.168.150.104:9000}
+  public-endpoint: ${MINIO_PUBLIC_ENDPOINT:http://192.168.150.104:9000}
+  access-key: ${MINIO_ROOT_USER:root}
+  secret-key: ${MINIO_ROOT_PASSWORD:root1234}
+  bucket: ${MINIO_BUCKET:vod}
+
+worker:
+  temp-dir: ${WORKER_TEMP_DIR:/tmp/vod}
+  max-attempts: ${WORKER_MAX_ATTEMPTS:3}
+  max-duration-sec: ${WORKER_MAX_DURATION_SEC:21600}
+  concurrency: ${WORKER_CONCURRENCY:1}
+
+# 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
+vod:
+  callback:
+    url: ${VOD_CALLBACK_URL:}
+    connect-timeout-ms: ${VOD_CALLBACK_CONNECT_TIMEOUT_MS:2000}
+    read-timeout-ms: ${VOD_CALLBACK_READ_TIMEOUT_MS:3000}
+    max-attempts: ${VOD_CALLBACK_MAX_ATTEMPTS:3}
+    pool-core-size: ${VOD_CALLBACK_POOL_CORE:1}
+    pool-max-size: ${VOD_CALLBACK_POOL_MAX:2}
+    queue-capacity: ${VOD_CALLBACK_QUEUE_CAPACITY:200}
+    keep-alive-seconds: ${VOD_CALLBACK_KEEP_ALIVE_SEC:60}
+
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+  type-handlers-package: com.example.vod.common.domain.media
+
+logging:
+  level:
+    com.example.vod.worker: info

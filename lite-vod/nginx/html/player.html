@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lite VOD 演示页</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17"></script>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --text: #e7ecf3;
+      --muted: #8b9bb4;
+      --accent: #3d8bfd;
+      --ok: #7fd99a;
+      --err: #f07178;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1e3a5f 0%, var(--bg) 55%);
+      color: var(--text);
+      display: flex;
+      justify-content: center;
+      padding: 2rem 1rem;
+    }
+    main { width: min(720px, 100%); }
+    h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 0.35rem; }
+    h2 {
+      font-size: 0.95rem;
+      font-weight: 600;
+      margin: 1.5rem 0 0.5rem;
+      padding-top: 1rem;
+      border-top: 1px solid #2c3a4f;
+    }
+    .hint { color: var(--muted); font-size: 0.875rem; margin: 0 0 1rem; }
+    .row {
+      display: flex;
+      gap: 0.5rem;
+      flex-wrap: wrap;
+      align-items: center;
+      margin-bottom: 0.75rem;
+    }
+    input[type="text"] {
+      flex: 1 1 220px;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid #2c3a4f;
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    input[type="file"] {
+      flex: 1 1 220px;
+      color: var(--muted);
+      font-size: 0.875rem;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      border: 0;
+      border-radius: 6px;
+      background: var(--accent);
+      color: #fff;
+      cursor: pointer;
+      font-weight: 600;
+    }
+    button.secondary { background: #2c3a4f; }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .msg {
+      min-height: 1.25rem;
+      font-size: 0.875rem;
+      margin: 0 0 0.5rem;
+      white-space: pre-wrap;
+    }
+    .msg.err { color: var(--err); }
+    .msg.ok { color: var(--ok); }
+    .msg.info { color: var(--muted); }
+    #url {
+      color: var(--muted);
+      font-size: 0.75rem;
+      word-break: break-all;
+      margin: 0 0 0.75rem;
+    }
+    video {
+      width: 100%;
+      background: #000;
+      border-radius: 8px;
+      aspect-ratio: 16 / 9;
+    }
+    .bar-wrap {
+      height: 6px;
+      background: #2c3a4f;
+      border-radius: 3px;
+      overflow: hidden;
+      margin: 0 0 0.75rem;
+      display: none;
+    }
+    .bar-wrap.on { display: block; }
+    .bar {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.15s linear;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Lite VOD 演示页</h1>
+    <p class="hint">上传走：申请凭证 → PUT MinIO → commit；播放须媒资状态为「已完成」。</p>
+
+    <h2>1. 上传</h2>
+    <div class="row">
+      <input id="fileInput" type="file" accept="video/mp4,video/*,.mp4" />
+      <button id="uploadBtn" type="button">上传并提交</button>
+    </div>
+    <div id="uploadBarWrap" class="bar-wrap"><div id="uploadBar" class="bar"></div></div>
+    <p id="uploadMsg" class="msg info"></p>
+
+    <h2>2. 播放</h2>
+    <div class="row">
+      <input id="fileId" type="text" placeholder="fileId（上传后自动填入）" autocomplete="off" />
+      <button id="playBtn" type="button">申请播放</button>
+      <button id="refreshBtn" type="button" class="secondary">查状态</button>
+    </div>
+    <p id="err" class="msg err"></p>
+    <p id="url"></p>
+    <video id="video" controls playsinline></video>
+  </main>
+  <script>
+    (function () {
+      const API_BASE = '/vod';
+      let hls;
+      let pollTimer;
+
+      const fileInput = document.getElementById('fileInput');
+      const uploadBtn = document.getElementById('uploadBtn');
+      const uploadMsg = document.getElementById('uploadMsg');
+      const uploadBarWrap = document.getElementById('uploadBarWrap');
+      const uploadBar = document.getElementById('uploadBar');
+      const fileIdEl = document.getElementById('fileId');
+      const playBtn = document.getElementById('playBtn');
+      const refreshBtn = document.getElementById('refreshBtn');
+      const errEl = document.getElementById('err');
+      const urlEl = document.getElementById('url');
+      const video = document.getElementById('video');
+
+      function setUploadMsg(text, kind) {
+        uploadMsg.textContent = text || '';
+        uploadMsg.className = 'msg ' + (kind || 'info');
+      }
+
+      async function readJson(res) {
+        const text = await res.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch (_) { /* not json */ }
+        if (!res.ok) {
+          const msg = (data && (data.message || data.error || data.statusText)) || text || ('HTTP ' + res.status);
+          throw new Error(msg);
+        }
+        return data;
+      }
+
+      function putWithProgress(url, file, onProgress) {
+        return new Promise(function (resolve, reject) {
+          const xhr = new XMLHttpRequest();
+          xhr.open('PUT', url);
+          // 预签名未绑定 Content-Type 时不要带该头，否则 MinIO 验签失败
+          xhr.upload.onprogress = function (e) {
+            if (e.lengthComputable && onProgress) {
+              onProgress(e.loaded / e.total);
+            }
+          };
+          xhr.onload = function () {
+            if (xhr.status >= 200 && xhr.status < 300) resolve();
+            else reject(new Error('MinIO PUT 失败: HTTP ' + xhr.status + ' ' + (xhr.responseText || '')));
+          };
+          xhr.onerror = function () {
+            reject(new Error('MinIO PUT 网络错误（请确认 MinIO CORS 允许本页来源，且 9000 可访问）'));
+          };
+          xhr.send(file);
+        });
+      }
+
+      async function fetchMedia(fileId) {
+        return readJson(await fetch(API_BASE + '/medias/' + encodeURIComponent(fileId), {
+          headers: { Accept: 'application/json' }
+        }));
+      }
+
+      function stopPoll() {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+
+      function startPoll(fileId) {
+        stopPoll();
+        pollTimer = setInterval(async function () {
+          try {
+            const m = await fetchMedia(fileId);
+            const label = m.statusText || m.status || '';
+            setUploadMsg('转码中… fileId=' + fileId + '  状态=' + label, 'info');
+            if (m.status === 'FINISHED' || m.status === 3) {
+              stopPoll();
+              setUploadMsg('转码完成，可点击「申请播放」。fileId=' + fileId, 'ok');
+            } else if (m.status === 'FAILED' || String(m.status).indexOf('FAIL') >= 0) {
+              stopPoll();
+              setUploadMsg('转码失败: ' + (m.errorMsg || label), 'err');
+            }
+          } catch (e) {
+            /* 轮询偶发失败忽略，下次再试 */
+          }
+        }, 3000);
+      }
+
+      uploadBtn.addEventListener('click', async function () {
+        const file = fileInput.files && fileInput.files[0];
+        errEl.textContent = '';
+        if (!file) {
+          setUploadMsg('请先选择视频文件', 'err');
+          return;
+        }
+        uploadBtn.disabled = true;
+        uploadBarWrap.classList.add('on');
+        uploadBar.style.width = '0%';
+        stopPoll();
+        try {
+          setUploadMsg('申请上传凭证…', 'info');
+          const sig = await readJson(await fetch(API_BASE + '/signature/upload', {
+            headers: { Accept: 'application/json' }
+          }));
+          if (!sig.uploadUrl || !sig.fileId) {
+            throw new Error('凭证响应缺少 uploadUrl / fileId');
+          }
+          fileIdEl.value = sig.fileId;
+
+          setUploadMsg('直传 MinIO… fileId=' + sig.fileId, 'info');
+          await putWithProgress(sig.uploadUrl, file, function (p) {
+            uploadBar.style.width = Math.round(p * 100) + '%';
+          });
+          uploadBar.style.width = '100%';
+
+          setUploadMsg('确认上传（commit）…', 'info');
+          const media = await readJson(await fetch(API_BASE + '/medias', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json'
+            },
+            body: JSON.stringify({ fileId: sig.fileId, filename: file.name })
+          }));
+          const label = media.statusText || media.status || '';
+          setUploadMsg('已提交。fileId=' + sig.fileId + '  状态=' + label + '（转码完成后即可播放）', 'ok');
+          if (media.status !== 'FINISHED' && media.status !== 3) {
+            startPoll(sig.fileId);
+          }
+        } catch (e) {
+          setUploadMsg(e.message || String(e), 'err');
+        } finally {
+          uploadBtn.disabled = false;
+        }
+      });
+
+      function destroyHls() {
+        if (hls) {
+          hls.destroy();
+          hls = null;
+        }
+        video.removeAttribute('src');
+        video.load();
+      }
+
+      function toPlayableUrl(playUrl) {
+        try {
+          const u = new URL(playUrl, window.location.origin);
+          if (u.pathname.startsWith('/hls/')) {
+            return window.location.origin + u.pathname + u.search;
+          }
+        } catch (_) { /* keep original */ }
+        return playUrl;
+      }
+
+      function attachSource(playUrl) {
+        destroyHls();
+        const src = toPlayableUrl(playUrl);
+        urlEl.textContent = 'playUrl: ' + src;
+
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+          video.play().catch(function () {});
+          return;
+        }
+        if (window.Hls && Hls.isSupported()) {
+          hls = new Hls({ enableWorker: true });
+          hls.loadSource(src);
+          hls.attachMedia(video);
+          hls.on(Hls.Events.ERROR, function (_e, data) {
+            if (data.fatal) {
+              errEl.textContent = '播放失败: ' + (data.type || '') + ' / ' + (data.details || 'fatal');
+            }
+          });
+          video.play().catch(function () {});
+          return;
+        }
+        throw new Error('当前浏览器不支持 HLS');
+      }
+
+      playBtn.addEventListener('click', async function () {
+        const fileId = fileIdEl.value.trim();
+        errEl.textContent = '';
+        urlEl.textContent = '';
+        if (!fileId) {
+          errEl.textContent = '请输入 fileId';
+          return;
+        }
+        playBtn.disabled = true;
+        try {
+          const data = await readJson(await fetch(
+            API_BASE + '/signature/play?fileId=' + encodeURIComponent(fileId),
+            { headers: { Accept: 'application/json' } }
+          ));
+          if (!data || !data.playUrl) {
+            throw new Error('响应缺少 playUrl');
+          }
+          attachSource(data.playUrl);
+        } catch (e) {
+          destroyHls();
+          errEl.textContent = e.message || String(e);
+        } finally {
+          playBtn.disabled = false;
+        }
+      });
+
+      refreshBtn.addEventListener('click', async function () {
+        const fileId = fileIdEl.value.trim();
+        errEl.textContent = '';
+        if (!fileId) {
+          errEl.textContent = '请输入 fileId';
+          return;
+        }
+        try {
+          const m = await fetchMedia(fileId);
+          errEl.className = 'msg ok';
+          errEl.textContent = '状态=' + (m.statusText || m.status) +
+            (m.errorMsg ? ('  ' + m.errorMsg) : '');
+        } catch (e) {
+          errEl.className = 'msg err';
+          errEl.textContent = e.message || String(e);
+        }
+      });
+
+      fileIdEl.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') playBtn.click();
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!-- 仅作聚合构建用，不作为子模块的 parent（子模块各自继承 spring-boot-starter-parent） -->
+    <groupId>com.example.vod</groupId>
+    <artifactId>lite-vod</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+    <packaging>pom</packaging>
+
+    <name>lite-vod</name>
+    <description>Lite VOD 多模块聚合</description>
+
+    <modules>
+        <module>vod-common</module>
+        <module>vod-api</module>
+        <module>vod-worker</module>
+    </modules>
+</project>

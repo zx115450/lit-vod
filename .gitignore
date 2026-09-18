@@ -1,0 +1,19 @@
+# 本机工具（不提交）
+tools/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# 含主机密码/Token 的运维脚本（不提交）
+scripts/
+
+# Maven
+**/target/
+*.class
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

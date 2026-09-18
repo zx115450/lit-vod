@@ -1,0 +1,15 @@
+# Maven
+vod-api/target/
+vod-worker/target/
+!**/target/*.jar
+*.log
+*.class
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
