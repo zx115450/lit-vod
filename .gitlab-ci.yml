@@ -45,23 +45,26 @@ test:
 
 build_push:
   stage: build
-  image: docker:24
+  image: maven:3.9-eclipse-temurin-17
   services:
     - name: docker:24-dind
       command:
         - "--insecure-registry=192.168.150.104:8089"
         - "--registry-mirror=https://docker.m.daocloud.io"
   variables:
-    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_HOST: "tcp://docker:2375"
+    DOCKER_TLS_CERTDIR: ""
   needs: ["test"]
   cache:
     key: maven-$CI_COMMIT_REF_SLUG
     paths:
       - .m2/repository
   before_script:
-    - sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g; s#http://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories
-    - apk add --no-cache openjdk17-jdk maven
     - !reference [.maven_aliyun, before_script]
+    - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
+    - curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.9.tgz -o /tmp/docker.tgz
+    - tar xzf /tmp/docker.tgz -C /tmp && cp /tmp/docker/docker /usr/local/bin/docker && chmod +x /usr/local/bin/docker
+    - docker info
   script:
     - cd "$LITE_VOD_DIR"
     - mvn -B -DskipTests package
