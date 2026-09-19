@@ -91,7 +91,7 @@ deploy_staging:
   before_script:
     - apk add --no-cache openssh-client curl
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - echo "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - tr -d '\r' < "$DEPLOY_SSH_KEY" > ~/.ssh/id_rsa
     - chmod 600 ~/.ssh/id_rsa
     - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
   script:
