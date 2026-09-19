@@ -1,0 +1,90 @@
+# 链路：test → build&push →（main 手动）deploy
+# Harbor 为 HTTP，dind 必须声明 insecure-registry，否则 docker push 失败。
+
+variables:
+  LITE_VOD_DIR: "lite-vod"
+  MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  IMAGE_TAG: "$CI_COMMIT_SHORT_SHA"
+
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  image: maven:3.9-eclipse-temurin-17
+  cache:
+    key: maven-$CI_COMMIT_REF_SLUG
+    paths:
+      - .m2/repository
+  script:
+    - cd "$LITE_VOD_DIR"
+    - mvn -B test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+build_push:
+  stage: build
+  image: docker:24
+  services:
+    - name: docker:24-dind
+      command:
+        - "--insecure-registry=192.168.150.104:8089"
+        - "--registry-mirror=https://docker.m.daocloud.io"
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+  needs: ["test"]
+  before_script:
+    - apk add --no-cache openjdk17-jdk maven
+  script:
+    - cd "$LITE_VOD_DIR"
+    - mvn -B -DskipTests package
+    - echo "$HARBOR_PASSWORD" | docker login -u "$HARBOR_USER" --password-stdin "$HARBOR_HOST"
+    - |
+      API_IMAGE="$HARBOR_HOST/$HARBOR_PROJECT/vod-api:$IMAGE_TAG"
+      WORKER_IMAGE="$HARBOR_HOST/$HARBOR_PROJECT/vod-worker:$IMAGE_TAG"
+      docker build -t "$API_IMAGE" -f vod-api/Dockerfile vod-api
+      docker build -t "$WORKER_IMAGE" -f vod-worker/Dockerfile vod-worker
+      docker push "$API_IMAGE"
+      docker push "$WORKER_IMAGE"
+      if [ "$CI_COMMIT_BRANCH" = "main" ]; then
+        docker tag "$API_IMAGE" "$HARBOR_HOST/$HARBOR_PROJECT/vod-api:latest"
+        docker tag "$WORKER_IMAGE" "$HARBOR_HOST/$HARBOR_PROJECT/vod-worker:latest"
+        docker push "$HARBOR_HOST/$HARBOR_PROJECT/vod-api:latest"
+        docker push "$HARBOR_HOST/$HARBOR_PROJECT/vod-worker:latest"
+      fi
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      when: manual
+
+deploy_staging:
+  stage: deploy
+  image: alpine:3.19
+  needs: ["build_push"]
+  before_script:
+    - apk add --no-cache openssh-client curl
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - echo "$DEPLOY_SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts
+  script:
+    - |
+      ssh "$DEPLOY_USER@$DEPLOY_HOST" "set -e
+        cd '$DEPLOY_PATH'
+        export IMAGE_TAG='$IMAGE_TAG'
+        touch .env
+        grep -q '^IMAGE_TAG=' .env && sed -i \"s/^IMAGE_TAG=.*/IMAGE_TAG=$IMAGE_TAG/\" .env || echo \"IMAGE_TAG=$IMAGE_TAG\" >> .env
+        echo '$HARBOR_PASSWORD' | docker login -u '$HARBOR_USER' --password-stdin '$HARBOR_HOST'
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml pull vod-api vod-worker
+        docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d vod-api vod-worker
+        sleep 5
+        curl -fsS http://127.0.0.1:8080/vod/health
+      "
+  environment:
+    name: staging
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+      when: manual

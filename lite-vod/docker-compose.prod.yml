@@ -1,0 +1,10 @@
+# 演示机覆盖：从 Harbor 拉镜像，不在目标机 build。
+# docker compose -f docker-compose.yml -f docker-compose.prod.yml pull vod-api vod-worker
+services:
+  vod-api:
+    image: 192.168.150.104:8089/lite-vod/vod-api:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  vod-worker:
+    image: 192.168.150.104:8089/lite-vod/vod-worker:${IMAGE_TAG:-latest}
+    build: !reset null

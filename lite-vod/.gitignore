@@ -13,3 +13,6 @@ vod-worker/target/
 # OS
 .DS_Store
 Thumbs.db
+
+# 演示机密钥与 IMAGE_TAG（用 .env.example 作模板）
+.env
