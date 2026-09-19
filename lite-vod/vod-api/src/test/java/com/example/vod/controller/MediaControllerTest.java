@@ -1,8 +1,14 @@
 package com.example.vod.controller;
 
+import com.example.vod.controller.dto.AbortMultipartRequest;
 import com.example.vod.controller.dto.CommitMediaRequest;
+import com.example.vod.controller.dto.CompleteMultipartRequest;
 import com.example.vod.controller.dto.MediaDto;
+import com.example.vod.controller.dto.MultipartUploadRequest;
+import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.PageResult;
+import com.example.vod.controller.dto.PartEtag;
+import com.example.vod.controller.dto.PartUrl;
 import com.example.vod.controller.dto.PlaySignatureResponse;
 import com.example.vod.controller.dto.UploadSignatureResponse;
 import com.example.vod.common.domain.media.MediaStatus;
@@ -23,6 +29,7 @@ import java.util.List;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
@@ -71,6 +78,60 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.uploadUrl").isString())
                 .andExpect(jsonPath("$.objectKey").value("raw/f7c2a1b0e9d84f6a/source.mp4"))
                 .andExpect(jsonPath("$.expireAt").value(1710000000));
+    }
+
+    @Test
+    void multipartUploadSignatureShouldReturnDto() throws Exception {
+        when(uploadSignatureService.createMultipart(any(MultipartUploadRequest.class)))
+                .thenReturn(new MultipartUploadSignatureResponse(
+                        "f7c2a1b0e9d84f6a",
+                        "raw/f7c2a1b0e9d84f6a/source.mp4",
+                        "upload-id-abc",
+                        10485760L,
+                        3,
+                        List.of(
+                                new PartUrl(1, "http://minio/...?partNumber=1"),
+                                new PartUrl(2, "http://minio/...?partNumber=2"),
+                                new PartUrl(3, "http://minio/...?partNumber=3")
+                        ),
+                        1710000000L
+                ));
+
+        mockMvc.perform(post("/vod/signature/upload/multipart")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"filename\":\"lesson01.mp4\",\"contentType\":\"video/mp4\","
+                                + "\"contentLength\":26214400,\"partSize\":10485760}"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fileId").value("f7c2a1b0e9d84f6a"))
+                .andExpect(jsonPath("$.uploadId").value("upload-id-abc"))
+                .andExpect(jsonPath("$.objectKey").value("raw/f7c2a1b0e9d84f6a/source.mp4"))
+                .andExpect(jsonPath("$.partCount").value(3))
+                .andExpect(jsonPath("$.parts[0].partNumber").value(1))
+                .andExpect(jsonPath("$.parts[2].partNumber").value(3));
+    }
+
+    @Test
+    void completeMultipartShouldReturn200() throws Exception {
+        doNothing().when(uploadSignatureService)
+                .complete(eq("f7c2a1b0e9d84f6a"), any(CompleteMultipartRequest.class));
+
+        mockMvc.perform(post("/vod/uploads/f7c2a1b0e9d84f6a/complete")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"uploadId\":\"uid\","
+                                + "\"parts\":[{\"partNumber\":1,\"etag\":\"\\\"a\\\"\"},"
+                                + "{\"partNumber\":2,\"etag\":\"\\\"b\\\"\"}]}"))
+                .andExpect(status().isOk());
+    }
+
+    @Test
+    void abortMultipartShouldReturn200() throws Exception {
+        doNothing().when(uploadSignatureService)
+                .abort(eq("f7c2a1b0e9d84f6a"), any(AbortMultipartRequest.class));
+
+        mockMvc.perform(post("/vod/uploads/f7c2a1b0e9d84f6a/abort")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"uploadId\":\"uid\"}"))
+                .andExpect(status().isOk());
     }
 
     @Test

@@ -1,7 +1,11 @@
 package com.example.vod.controller;
 
+import com.example.vod.controller.dto.AbortMultipartRequest;
 import com.example.vod.controller.dto.CommitMediaRequest;
+import com.example.vod.controller.dto.CompleteMultipartRequest;
 import com.example.vod.controller.dto.MediaDto;
+import com.example.vod.controller.dto.MultipartUploadRequest;
+import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.PageResult;
 import com.example.vod.controller.dto.PlaySignatureResponse;
 import com.example.vod.controller.dto.UploadSignatureResponse;
@@ -47,6 +51,37 @@ public class MediaController {
     public UploadSignatureResponse uploadSignature() {
         // TODO: 接入管理端鉴权，从 Authorization Header 解析当前用户
         return uploadSignatureService.create();
+    }
+
+    /**
+     * 二期：申请 multipart 分片上传凭证。
+     * <p>需 {@code VOD_UPLOAD_MULTIPART_ENABLED=true}，否则返回 501。
+     * 返回 fileId + uploadId + 各片预签名 URL（一次发齐）。
+     */
+    @PostMapping("/signature/upload/multipart")
+    public MultipartUploadSignatureResponse multipartUploadSignature(@Valid @RequestBody MultipartUploadRequest request) {
+        // TODO: 接入管理端鉴权
+        return uploadSignatureService.createMultipart(request);
+    }
+
+    /**
+     * 二期：完成分片合并。
+     * <p>客户端提交 uploadId + parts[{partNumber, etag}]，服务端调 MinIO CompleteMultipartUpload。
+     * 成功后才能 POST /vod/medias（commit），HeadObject 才能通过。
+     */
+    @PostMapping("/uploads/{fileId}/complete")
+    public void completeMultipart(@PathVariable String fileId,
+                                  @Valid @RequestBody CompleteMultipartRequest request) {
+        uploadSignatureService.complete(fileId, request);
+    }
+
+    /**
+     * 二期：中止分片上传，丢弃未完成分片，避免桶内残留计费。
+     */
+    @PostMapping("/uploads/{fileId}/abort")
+    public void abortMultipart(@PathVariable String fileId,
+                               @Valid @RequestBody AbortMultipartRequest request) {
+        uploadSignatureService.abort(fileId, request);
     }
 
     /**

@@ -110,12 +110,13 @@
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">上传走：申请凭证 → PUT MinIO → commit；播放须媒资状态为「已完成」。</p>
+    <p class="hint">整文件：申请凭证 → PUT MinIO → commit。分片：申请 multipart 凭证 → 按片 PUT → 合并 → commit。播放须媒资状态为「已完成」。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
       <input id="fileInput" type="file" accept="video/mp4,video/*,.mp4" />
       <button id="uploadBtn" type="button">上传并提交</button>
+      <button id="multipartBtn" type="button" class="secondary">分片上传</button>
     </div>
     <div id="uploadBarWrap" class="bar-wrap"><div id="uploadBar" class="bar"></div></div>
     <p id="uploadMsg" class="msg info"></p>
@@ -136,8 +137,12 @@
       let hls;
       let pollTimer;
 
+      const PART_SIZE = 10 * 1024 * 1024;
+      const PART_CONCURRENCY = 3;
+
       const fileInput = document.getElementById('fileInput');
       const uploadBtn = document.getElementById('uploadBtn');
+      const multipartBtn = document.getElementById('multipartBtn');
       const uploadMsg = document.getElementById('uploadMsg');
       const uploadBarWrap = document.getElementById('uploadBarWrap');
       const uploadBar = document.getElementById('uploadBar');
@@ -164,25 +169,33 @@
         return data;
       }
 
-      function putWithProgress(url, file, onProgress) {
+      function putWithProgress(url, body, onProgress) {
         return new Promise(function (resolve, reject) {
           const xhr = new XMLHttpRequest();
           xhr.open('PUT', url);
           // 预签名未绑定 Content-Type 时不要带该头，否则 MinIO 验签失败
           xhr.upload.onprogress = function (e) {
             if (e.lengthComputable && onProgress) {
-              onProgress(e.loaded / e.total);
+              onProgress(e.loaded, e.total);
             }
           };
           xhr.onload = function () {
-            if (xhr.status >= 200 && xhr.status < 300) resolve();
-            else reject(new Error('MinIO PUT 失败: HTTP ' + xhr.status + ' ' + (xhr.responseText || '')));
+            if (xhr.status >= 200 && xhr.status < 300) {
+              resolve(xhr.getResponseHeader('ETag') || '');
+            } else {
+              reject(new Error('MinIO PUT 失败: HTTP ' + xhr.status + ' ' + (xhr.responseText || '')));
+            }
           };
           xhr.onerror = function () {
             reject(new Error('MinIO PUT 网络错误（请确认 MinIO CORS 允许本页来源，且 9000 可访问）'));
           };
-          xhr.send(file);
+          xhr.send(body);
         });
+      }
+
+      function setUploading(on) {
+        uploadBtn.disabled = on;
+        multipartBtn.disabled = on;
       }
 
       async function fetchMedia(fileId) {
@@ -218,17 +231,48 @@
         }, 3000);
       }
 
-      uploadBtn.addEventListener('click', async function () {
+      function selectedFile() {
         const file = fileInput.files && fileInput.files[0];
         errEl.textContent = '';
         if (!file) {
           setUploadMsg('请先选择视频文件', 'err');
-          return;
+          return null;
         }
-        uploadBtn.disabled = true;
+        if (!file.size) {
+          setUploadMsg('文件为空，无法上传', 'err');
+          return null;
+        }
+        return file;
+      }
+
+      function beginUpload() {
+        setUploading(true);
         uploadBarWrap.classList.add('on');
         uploadBar.style.width = '0%';
         stopPoll();
+      }
+
+      async function commitAndWatch(fileId, filename) {
+        setUploadMsg('确认上传（commit）…', 'info');
+        const media = await readJson(await fetch(API_BASE + '/medias', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: JSON.stringify({ fileId: fileId, filename: filename })
+        }));
+        const label = media.statusText || media.status || '';
+        setUploadMsg('已提交。fileId=' + fileId + '  状态=' + label + '（转码完成后即可播放）', 'ok');
+        if (media.status !== 'FINISHED' && media.status !== 3) {
+          startPoll(fileId);
+        }
+      }
+
+      uploadBtn.addEventListener('click', async function () {
+        const file = selectedFile();
+        if (!file) return;
+        beginUpload();
         try {
           setUploadMsg('申请上传凭证…', 'info');
           const sig = await readJson(await fetch(API_BASE + '/signature/upload', {
@@ -240,29 +284,114 @@
           fileIdEl.value = sig.fileId;
 
           setUploadMsg('直传 MinIO… fileId=' + sig.fileId, 'info');
-          await putWithProgress(sig.uploadUrl, file, function (p) {
-            uploadBar.style.width = Math.round(p * 100) + '%';
+          await putWithProgress(sig.uploadUrl, file, function (loaded, total) {
+            uploadBar.style.width = Math.round(loaded / total * 100) + '%';
           });
           uploadBar.style.width = '100%';
+          await commitAndWatch(sig.fileId, file.name);
+        } catch (e) {
+          setUploadMsg(e.message || String(e), 'err');
+        } finally {
+          setUploading(false);
+        }
+      });
 
-          setUploadMsg('确认上传（commit）…', 'info');
-          const media = await readJson(await fetch(API_BASE + '/medias', {
+      multipartBtn.addEventListener('click', async function () {
+        const file = selectedFile();
+        if (!file) return;
+        beginUpload();
+        let session = null;
+        try {
+          setUploadMsg('申请分片凭证…', 'info');
+          const sig = await readJson(await fetch(API_BASE + '/signature/upload/multipart', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Accept: 'application/json'
             },
-            body: JSON.stringify({ fileId: sig.fileId, filename: file.name })
+            body: JSON.stringify({
+              filename: file.name,
+              contentType: file.type || 'video/mp4',
+              contentLength: file.size,
+              partSize: PART_SIZE
+            })
           }));
-          const label = media.statusText || media.status || '';
-          setUploadMsg('已提交。fileId=' + sig.fileId + '  状态=' + label + '（转码完成后即可播放）', 'ok');
-          if (media.status !== 'FINISHED' && media.status !== 3) {
-            startPoll(sig.fileId);
+          if (!sig.fileId || !sig.uploadId || !sig.parts || !sig.parts.length) {
+            throw new Error('分片凭证缺少 fileId / uploadId / parts');
           }
+          session = sig;
+          fileIdEl.value = sig.fileId;
+
+          const partSize = sig.partSize || PART_SIZE;
+          const ordered = sig.parts.slice().sort(function (a, b) {
+            return a.partNumber - b.partNumber;
+          });
+          const loaded = new Array(ordered.length).fill(0);
+          const etags = new Array(ordered.length);
+          let cursor = 0;
+
+          function paintProgress() {
+            let sum = 0;
+            for (let i = 0; i < loaded.length; i++) sum += loaded[i];
+            const ratio = file.size ? Math.min(1, sum / file.size) : 0;
+            uploadBar.style.width = Math.round(ratio * 100) + '%';
+          }
+
+          async function uploadOne(index) {
+            const part = ordered[index];
+            const start = (part.partNumber - 1) * partSize;
+            const end = Math.min(start + partSize, file.size);
+            const blob = file.slice(start, end);
+            setUploadMsg('分片上传 ' + part.partNumber + '/' + ordered.length + '  fileId=' + sig.fileId, 'info');
+            const etag = await putWithProgress(part.uploadUrl, blob, function (n) {
+              loaded[index] = n;
+              paintProgress();
+            });
+            if (!etag) {
+              throw new Error('第 ' + part.partNumber + ' 片响应缺少 ETag（请确认 MinIO CORS 暴露 ETag）');
+            }
+            loaded[index] = blob.size;
+            paintProgress();
+            etags[index] = { partNumber: part.partNumber, etag: etag };
+          }
+
+          async function worker() {
+            while (cursor < ordered.length) {
+              const index = cursor++;
+              await uploadOne(index);
+            }
+          }
+
+          const workers = [];
+          const n = Math.min(PART_CONCURRENCY, ordered.length);
+          for (let i = 0; i < n; i++) workers.push(worker());
+          await Promise.all(workers);
+
+          setUploadMsg('合并分片…', 'info');
+          await readJson(await fetch(API_BASE + '/uploads/' + encodeURIComponent(sig.fileId) + '/complete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json'
+            },
+            body: JSON.stringify({ uploadId: sig.uploadId, parts: etags })
+          }));
+          session = null;
+          uploadBar.style.width = '100%';
+          await commitAndWatch(sig.fileId, file.name);
         } catch (e) {
+          if (session) {
+            try {
+              await fetch(API_BASE + '/uploads/' + encodeURIComponent(session.fileId) + '/abort', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                body: JSON.stringify({ uploadId: session.uploadId })
+              });
+            } catch (_) { /* 中止失败不影响原错误展示 */ }
+          }
           setUploadMsg(e.message || String(e), 'err');
         } finally {
-          uploadBtn.disabled = false;
+          setUploading(false);
         }
       });
 

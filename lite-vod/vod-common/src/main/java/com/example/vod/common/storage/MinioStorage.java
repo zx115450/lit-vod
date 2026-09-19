@@ -1,11 +1,14 @@
 package com.example.vod.common.storage;
 
 import io.minio.BucketExistsArgs;
+import io.minio.CreateMultipartUploadResponse;
 import io.minio.GetObjectArgs;
 import io.minio.GetPresignedObjectUrlArgs;
 import io.minio.ListObjectsArgs;
 import io.minio.MakeBucketArgs;
+import io.minio.MinioAsyncClient;
 import io.minio.MinioClient;
+import io.minio.ObjectWriteResponse;
 import io.minio.RemoveObjectArgs;
 import io.minio.Result;
 import io.minio.StatObjectArgs;
@@ -14,6 +17,9 @@ import io.minio.UploadObjectArgs;
 import io.minio.errors.ErrorResponseException;
 import io.minio.http.Method;
 import io.minio.messages.Item;
+import io.minio.messages.Part;
+import com.google.common.collect.ImmutableMultimap;
+import com.google.common.collect.Multimap;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Component;
 
@@ -22,28 +28,36 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.time.Duration;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
- * MinIO 封装：预签名上传、head、stat、下载、写回（带 Content-Type）、清理前缀。
+ * MinIO 封装：预签名上传、head、stat、下载、写回（带 Content-Type）、清理前缀、Multipart 分片。
  *
  * <p>api 与 worker 共用。写回 HLS / 封面时必须显式设置 Content-Type，
  * 否则 m3u8 / ts 会被识别为 application/octet-stream，浏览器播放异常。
+ * <p>Multipart 方法（create / presignPart / complete / abort）仅 vod-api 使用，
+ * 用于二期大文件分片直传。
  */
 @Component
 public class MinioStorage {
 
     private final MinioClient minioClient;
     private final MinioClient presignClient;
+    private final MinioAsyncClient asyncClient;
     private final MinioProperties props;
 
     public MinioStorage(
             @Qualifier("minioClient") MinioClient minioClient,
             @Qualifier("minioPresignClient") MinioClient presignClient,
+            @Qualifier("minioAsyncClient") MinioAsyncClient asyncClient,
             MinioProperties props
     ) {
         this.minioClient = minioClient;
         this.presignClient = presignClient;
+        this.asyncClient = asyncClient;
         this.props = props;
     }
 
@@ -71,6 +85,83 @@ public class MinioStorage {
                             .build());
         } catch (Exception e) {
             throw new IllegalStateException("presigned put failed: " + objectKey, e);
+        }
+    }
+
+    // ==================== Multipart（二期） ====================
+
+    /**
+     * 开启 multipart 上传会话，返回 uploadId。
+     * <p>此时桶内尚无最终对象，分片挂在 (objectKey, uploadId) 下。
+     * <p>MinIO SDK 8.5.x 的同步 createMultipartUpload 是 protected，只能走 async + join。
+     */
+    public String createMultipartUpload(String objectKey, String contentType) {
+        try {
+            Multimap<String, String> headers = (contentType == null || contentType.isBlank())
+                    ? ImmutableMultimap.of()
+                    : ImmutableMultimap.of("Content-Type", contentType);
+            Multimap<String, String> empty = ImmutableMultimap.of();
+            CreateMultipartUploadResponse resp = asyncClient.createMultipartUploadAsync(
+                    props.bucket(), null, objectKey, headers, empty).join();
+            return resp.result().uploadId();
+        } catch (Exception e) {
+            throw new IllegalStateException("create multipart failed: " + objectKey, e);
+        }
+    }
+
+    /**
+     * 签发 UploadPart 预签名 URL。
+     * <p>与整对象 presignedPut 的差别：query 必须带 uploadId + partNumber（从 1 开始）。
+     * 每片的 partNumber 参与签名，因此不能复用同一 URL 传不同片。
+     */
+    public String presignedUploadPart(String objectKey, String uploadId, int partNumber, Duration expiry) {
+        try {
+            int seconds = (int) Math.max(60, Math.min(expiry.toSeconds(), TimeUnit.HOURS.toSeconds(2)));
+            Map<String, String> query = new HashMap<>();
+            query.put("uploadId", uploadId);
+            query.put("partNumber", String.valueOf(partNumber));
+            return presignClient.getPresignedObjectUrl(
+                    GetPresignedObjectUrlArgs.builder()
+                            .method(Method.PUT)
+                            .bucket(props.bucket())
+                            .object(objectKey)
+                            .expiry(seconds, TimeUnit.SECONDS)
+                            .extraQueryParams(query)
+                            .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("presign part failed: " + objectKey + " #" + partNumber, e);
+        }
+    }
+
+    /**
+     * 完成合并：MinIO 按 partNumber 升序用 ETag 校验并拼成最终对象。
+     * <p>成功后 objectKey 上才有完整对象，commit 的 HeadObject 才能通过。
+     *
+     * @param parts 按 partNumber 升序的 (partNumber, etag) 列表，ETag 应原样（含引号）
+     */
+    public void completeMultipartUpload(String objectKey, String uploadId, List<Part> parts) {
+        try {
+            Multimap<String, String> empty = ImmutableMultimap.of();
+            ObjectWriteResponse resp = asyncClient.completeMultipartUploadAsync(
+                    props.bucket(), null, objectKey, uploadId,
+                    parts.toArray(Part[]::new), empty, empty).join();
+            // resp 不需要额外处理；失败会抛异常
+        } catch (Exception e) {
+            throw new IllegalStateException("complete multipart failed: " + objectKey, e);
+        }
+    }
+
+    /**
+     * 中止 multipart 上传，丢弃该 uploadId 下未完成分片。
+     * <p>未 Complete 就放弃时必须调，否则残留分片占空间、可能计费。
+     */
+    public void abortMultipartUpload(String objectKey, String uploadId) {
+        try {
+            Multimap<String, String> empty = ImmutableMultimap.of();
+            asyncClient.abortMultipartUploadAsync(
+                    props.bucket(), null, objectKey, uploadId, empty, empty).join();
+        } catch (Exception e) {
+            throw new IllegalStateException("abort multipart failed: " + objectKey, e);
         }
     }
 

@@ -105,8 +105,15 @@ deploy_staging:
         echo '$HARBOR_PASSWORD' | docker login -u '$HARBOR_USER' --password-stdin '$HARBOR_HOST'
         docker compose -f docker-compose.yml -f docker-compose.prod.yml pull vod-api vod-worker
         docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d vod-api vod-worker
-        sleep 5
-        curl -fsS http://127.0.0.1:8080/vod/health
+        ok=0
+        for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+          if curl -fsS http://127.0.0.1:8080/vod/health; then
+            ok=1
+            break
+          fi
+          sleep 3
+        done
+        test \"\$ok\" = 1
       "
   environment:
     name: staging

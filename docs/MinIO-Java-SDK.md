@@ -104,7 +104,7 @@ MinioClient minio = MinioClient.builder()
 | `getObject` | `GET` | `download()` | Worker 拉原片 |
 | `listObjects` + `removeObject` | `GET`/`DELETE` | `removePrefix()` | 删除媒资 |
 
-大文件 Multipart 放到步骤 16，本文不做。
+大文件 Multipart（`createMultipartUpload` / 预签名 UploadPart / `complete` / `abort`）见二期：[07-MinIO方法清单](./13-二期改动升级/07-MinIO方法清单.md)。
 
 ## 用法详解
 
