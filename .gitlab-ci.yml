@@ -61,8 +61,15 @@ build_push:
       - .m2/repository
   before_script:
     - !reference [.maven_aliyun, before_script]
+    - |
+      sed -i \
+        -e 's#http://archive.ubuntu.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' \
+        -e 's#https://archive.ubuntu.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' \
+        -e 's#http://security.ubuntu.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' \
+        -e 's#https://security.ubuntu.com/ubuntu#https://mirrors.aliyun.com/ubuntu#g' \
+        /etc/apt/sources.list
     - apt-get update && apt-get install -y --no-install-recommends ca-certificates curl
-    - curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.9.tgz -o /tmp/docker.tgz
+    - curl -fsSL https://mirrors.aliyun.com/docker-ce/linux/static/stable/x86_64/docker-24.0.9.tgz -o /tmp/docker.tgz || curl -fsSL https://download.docker.com/linux/static/stable/x86_64/docker-24.0.9.tgz -o /tmp/docker.tgz
     - tar xzf /tmp/docker.tgz -C /tmp && cp /tmp/docker/docker /usr/local/bin/docker && chmod +x /usr/local/bin/docker
     - docker info
   script:
