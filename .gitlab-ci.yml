@@ -89,6 +89,7 @@ deploy_staging:
   image: alpine:3.19
   needs: ["build_push"]
   before_script:
+    - sed -i 's#https://dl-cdn.alpinelinux.org#https://mirrors.aliyun.com#g' /etc/apk/repositories
     - apk add --no-cache openssh-client curl
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - tr -d '\r' < "$DEPLOY_SSH_KEY" > ~/.ssh/id_rsa

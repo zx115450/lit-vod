@@ -1,10 +1,23 @@
 # 演示机覆盖：从 Harbor 拉镜像，不在目标机 build。
+# MySQL / RabbitMQ / MinIO 使用 192.168.150.104 上已经在跑的实例。
 # docker compose -f docker-compose.yml -f docker-compose.prod.yml pull vod-api vod-worker
 services:
   vod-api:
     image: 192.168.150.104:8089/lite-vod/vod-api:${IMAGE_TAG:-latest}
     build: !reset null
+    ports:
+      - "8080:8080"
+    environment:
+      MYSQL_HOST: 192.168.150.104
+      RABBITMQ_HOST: 192.168.150.104
+      MINIO_ENDPOINT: http://192.168.150.104:9000
+      MINIO_PUBLIC_ENDPOINT: http://192.168.150.104:9000
 
   vod-worker:
     image: 192.168.150.104:8089/lite-vod/vod-worker:${IMAGE_TAG:-latest}
     build: !reset null
+    environment:
+      MYSQL_HOST: 192.168.150.104
+      RABBITMQ_HOST: 192.168.150.104
+      MINIO_ENDPOINT: http://192.168.150.104:9000
+      MINIO_PUBLIC_ENDPOINT: http://192.168.150.104:9000
