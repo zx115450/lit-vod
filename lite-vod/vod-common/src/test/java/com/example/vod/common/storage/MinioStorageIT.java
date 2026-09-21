@@ -1,5 +1,6 @@
 package com.example.vod.common.storage;
 
+import io.minio.MinioAsyncClient;
 import io.minio.MinioClient;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -44,7 +45,11 @@ class MinioStorageIT {
                 .endpoint(endpoint)
                 .credentials(accessKey, secretKey)
                 .build();
-        storage = new MinioStorage(client, client, props);
+        MinioAsyncClient asyncClient = MinioAsyncClient.builder()
+                .endpoint(endpoint)
+                .credentials(accessKey, secretKey)
+                .build();
+        storage = new MinioStorage(client, client, asyncClient, props);
         try {
             storage.ensureBucket();
             available = true;
