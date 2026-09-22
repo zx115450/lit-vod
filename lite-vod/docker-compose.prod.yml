@@ -12,6 +12,7 @@ services:
       RABBITMQ_HOST: 192.168.150.104
       MINIO_ENDPOINT: http://192.168.150.104:9000
       MINIO_PUBLIC_ENDPOINT: http://192.168.150.104:9000
+      VOD_UPLOAD_MULTIPART_ENABLED: "true"
 
   vod-worker:
     image: 192.168.150.104:8089/lite-vod/vod-worker:${IMAGE_TAG:-latest}
@@ -21,3 +22,4 @@ services:
       RABBITMQ_HOST: 192.168.150.104
       MINIO_ENDPOINT: http://192.168.150.104:9000
       MINIO_PUBLIC_ENDPOINT: http://192.168.150.104:9000
+      VOD_ABR_ENABLED: "true"

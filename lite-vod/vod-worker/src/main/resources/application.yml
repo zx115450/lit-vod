@@ -40,6 +40,18 @@ worker:
   max-duration-sec: ${WORKER_MAX_DURATION_SEC:21600}
   concurrency: ${WORKER_CONCURRENCY:1}
 
+# 多码率 ABR：开启后 Worker 用 FFmpeg filter_complex 一次解码多路编码，出 master.m3u8
+vod:
+  abr:
+    enabled: ${VOD_ABR_ENABLED:true}
+    # 档位示例（可覆盖）：
+    # variants:
+    #   - label: 360p
+    #     height: 360
+    #     video-bitrate: 600000
+    #     audio-bitrate: 96000
+    #     bandwidth: 800000
+
 # 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
 vod:
   callback:

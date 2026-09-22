@@ -1,5 +1,7 @@
 package com.example.vod.gateway;
 
+import com.example.vod.common.domain.media.Media;
+import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.storage.MinioStorage;
 import com.example.vod.service.PlaySignService;
 import jakarta.servlet.FilterChain;
@@ -24,7 +26,8 @@ import java.util.Optional;
  * 临时播放网关（步骤 11 Spring Filter 方案）：验签后从 MinIO 流式回写 /hls/**。
  *
  * <p>生产建议改为 Nginx auth_request；本 Filter 仅便于开发联调。
- * 签发仍绑定 {@code /hls/{fileId}/index.m3u8}，目录下任意资源用同一套 query 验签。
+ * 签发绑定的清单路径来自该媒资的 {@code media_url}（master 或 index）；
+ * 目录下任意资源用同一套 query 验签。
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 20)
@@ -34,10 +37,12 @@ public class PlayGatewayFilter extends OncePerRequestFilter {
 
     private final PlaySignService playSignService;
     private final MinioStorage minioStorage;
+    private final MediaMapper mediaMapper;
 
-    public PlayGatewayFilter(PlaySignService playSignService, MinioStorage minioStorage) {
+    public PlayGatewayFilter(PlaySignService playSignService, MinioStorage minioStorage, MediaMapper mediaMapper) {
         this.playSignService = playSignService;
         this.minioStorage = minioStorage;
+        this.mediaMapper = mediaMapper;
     }
 
     @Override
@@ -86,7 +91,10 @@ public class PlayGatewayFilter extends OncePerRequestFilter {
             return;
         }
 
-        if (!playSignService.verify(hls.signedPath(), expireAt, exper, sign, playSignService.nowEpoch())) {
+        Media media = mediaMapper.findByFileId(hls.fileId());
+        String mediaUrl = media == null ? null : media.getMediaUrl();
+        String signedPath = PlayPathSupport.signedPlaylistPath(hls.fileId(), mediaUrl);
+        if (!playSignService.verify(signedPath, expireAt, exper, sign, playSignService.nowEpoch())) {
             response.sendError(HttpServletResponse.SC_FORBIDDEN, "invalid or expired sign");
             return;
         }

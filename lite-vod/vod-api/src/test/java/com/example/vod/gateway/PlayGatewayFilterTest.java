@@ -1,5 +1,7 @@
 package com.example.vod.gateway;
 
+import com.example.vod.common.domain.media.Media;
+import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.storage.MinioStorage;
 import com.example.vod.config.PlaySignProperties;
 import com.example.vod.service.PlaySignService;
@@ -27,13 +29,15 @@ class PlayGatewayFilterTest {
 
     private PlaySignService playSignService;
     private MinioStorage minioStorage;
+    private MediaMapper mediaMapper;
     private PlayGatewayFilter filter;
 
     @BeforeEach
     void setUp() {
         playSignService = new PlaySignService(new PlaySignProperties("test-secret", "http://localhost:8080", 3600L));
         minioStorage = mock(MinioStorage.class);
-        filter = new PlayGatewayFilter(playSignService, minioStorage);
+        mediaMapper = mock(MediaMapper.class);
+        filter = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper);
     }
 
     @Test
@@ -143,5 +147,77 @@ class PlayGatewayFilterTest {
         filter.doFilter(request, response, new MockFilterChain());
 
         assertEquals(404, response.getStatus());
+    }
+
+    @Test
+    void shouldStreamAbrMasterAndRewriteVariantUri() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/master.m3u8"));
+
+        String signedPath = "/hls/" + FILE_ID + "/master.m3u8";
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(signedPath, e, 0);
+        String playlist = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360p/index.m3u8\n";
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/master.m3u8")))
+                .thenReturn(new ByteArrayInputStream(playlist.getBytes(StandardCharsets.UTF_8)));
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", signedPath);
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "0");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(200, response.getStatus());
+        String body = response.getContentAsString();
+        assertTrue(body.contains("360p/index.m3u8?e=" + e + "&exper=0&sign=" + sign));
+    }
+
+    @Test
+    void shouldAllowVariantSegmentUnderMasterSignature() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/master.m3u8"));
+
+        String signedPath = "/hls/" + FILE_ID + "/master.m3u8";
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(signedPath, e, 0);
+        byte[] ts = new byte[]{0x47, 0x40, 0x00};
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/360p/segment_000.ts")))
+                .thenReturn(new ByteArrayInputStream(ts));
+
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/hls/" + FILE_ID + "/360p/segment_000.ts");
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "0");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(200, response.getStatus());
+        assertEquals("video/MP2T", response.getContentType());
+    }
+
+    @Test
+    void shouldRejectMasterSignatureWhenMediaIsSinglePlaylist() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/index.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String masterSign = playSignService.sign("/hls/" + FILE_ID + "/master.m3u8", e, 0);
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", SIGNED_PATH);
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "0");
+        request.setParameter("sign", masterSign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filter.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(403, response.getStatus());
+    }
+
+    private static Media mediaWithUrl(String mediaUrl) {
+        Media media = new Media();
+        media.setFileId(FILE_ID);
+        media.setMediaUrl(mediaUrl);
+        return media;
     }
 }

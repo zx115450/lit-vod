@@ -1,6 +1,7 @@
 package com.example.vod.service;
 
 import com.example.vod.common.domain.media.Media;
+import com.example.vod.gateway.PlayPathSupport;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
 import com.example.vod.controller.dto.PlaySignatureResponse;
@@ -49,8 +50,8 @@ public class PlaySignatureService {
         int experSeconds = Math.max(0, exper);
         long expireAt = playSignService.nowEpoch() + playSignService.ttlSeconds();
 
-        // 规范路径：与 ObjectKeys.hlsPlaylist 一致（无查询串，小写 hex fileId 由调用方保证）
-        String path = "/hls/" + fileId + "/index.m3u8";
+        // 以转码写回的 media_url 为准：master 签 master，单档签 index
+        String path = PlayPathSupport.signedPlaylistPath(fileId, media.getMediaUrl());
         String sign = playSignService.sign(path, expireAt, experSeconds);
 
         String playUrl = String.format("%s%s?e=%d&exper=%d&sign=%s",

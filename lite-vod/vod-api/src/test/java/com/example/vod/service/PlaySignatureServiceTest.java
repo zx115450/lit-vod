@@ -128,6 +128,19 @@ class PlaySignatureServiceTest {
         assertTrue(resp.playUrl().startsWith("http://localhost/hls/"));
     }
 
+    @Test
+    void signShouldPointToMasterWhenMediaUrlIsMaster() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        Media media = finishedMedia(fileId);
+        media.setMediaUrl("hls/" + fileId + "/master.m3u8");
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media);
+        when(playSignService.sign(eq("/hls/" + fileId + "/master.m3u8"), anyLong(), anyInt())).thenReturn("cafe");
+
+        PlaySignatureResponse resp = service.sign(fileId, 0);
+
+        assertTrue(resp.playUrl().startsWith("http://localhost/hls/" + fileId + "/master.m3u8?"));
+    }
+
     private Media finishedMedia(String fileId) {
         Media media = new Media();
         media.setId(1L);

@@ -1,5 +1,6 @@
 package com.example.vod.worker;
 
+import com.example.vod.common.config.AbrProperties;
 import com.example.vod.worker.callback.CallbackProperties;
 import com.example.vod.worker.config.WorkerProperties;
 import com.example.vod.worker.process.CommandRunner;
@@ -27,7 +28,7 @@ import java.util.List;
  */
 @Slf4j
 @SpringBootApplication(scanBasePackages = {"com.example.vod.worker", "com.example.vod.common"})
-@EnableConfigurationProperties({WorkerProperties.class, CallbackProperties.class})
+@EnableConfigurationProperties({WorkerProperties.class, CallbackProperties.class, AbrProperties.class})
 @MapperScan("com.example.vod.common.domain.media")
 public class VodWorkerApplication {
 

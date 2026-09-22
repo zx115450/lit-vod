@@ -1,5 +1,6 @@
 package com.example.vod.worker.consumer;
 
+import com.example.vod.common.config.AbrProperties;
 import com.example.vod.worker.callback.CallbackNotifier;
 import com.example.vod.worker.callback.CallbackPayload;
 import com.example.vod.worker.config.WorkerProperties;
@@ -68,6 +69,7 @@ public class ProcedureConsumer {
     private final MinioStorage minioStorage;
     private final FfmpegService ffmpegService;
     private final WorkerProperties props;
+    private final AbrProperties abrProperties;
     private final CallbackNotifier callbackNotifier;
 
     public ProcedureConsumer(MediaMapper mediaMapper,
@@ -75,12 +77,14 @@ public class ProcedureConsumer {
                              MinioStorage minioStorage,
                              FfmpegService ffmpegService,
                              WorkerProperties props,
+                             AbrProperties abrProperties,
                              CallbackNotifier callbackNotifier) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
         this.minioStorage = minioStorage;
         this.ffmpegService = ffmpegService;
         this.props = props;
+        this.abrProperties = abrProperties;
         this.callbackNotifier = callbackNotifier;
     }
 
@@ -136,7 +140,9 @@ public class ProcedureConsumer {
             uploadTranscodeOutputs(fileId, workDir);
 
             // 8. 写回 media = PROCESSED
-            String mediaUrl = ObjectKeys.hlsPlaylist(fileId);
+            String mediaUrl = ffmpegService.isAbrEnabled()
+                    ? ObjectKeys.hlsMaster(fileId)
+                    : ObjectKeys.hlsPlaylist(fileId);
             String coverUrl = ObjectKeys.cover(fileId);
             mediaMapper.updateProcessed(fileId, MediaStatus.FINISHED, mediaUrl, coverUrl, (float) duration);
 
@@ -156,30 +162,73 @@ public class ProcedureConsumer {
     }
 
     /**
-     * 上传 index.m3u8 + 全部 segment_*.ts + cover.jpg。
+     * 上传 HLS 产物 + 封面。
+     * ABR 开启时：各档 segment + index 先传齐，最后传 master.m3u8。
+     * ABR 关闭时：与首期一致，传根目录 segment + index.m3u8。
      * 任一上传失败抛异常，整任务 FAILED，不会出现「仅清单成功却标 PROCESSED」。
      */
     private void uploadTranscodeOutputs(String fileId, Path workDir) throws IOException {
-        Path playlist = workDir.resolve("index.m3u8");
         Path cover = workDir.resolve("cover.jpg");
-        if (!Files.isRegularFile(playlist)) {
-            throw new IllegalStateException("missing index.m3u8 after transcode");
-        }
         if (!Files.isRegularFile(cover)) {
             throw new IllegalStateException("missing cover.jpg after transcode");
         }
 
+        if (ffmpegService.isAbrEnabled()) {
+            uploadAbrOutputs(fileId, workDir);
+        } else {
+            uploadSingleOutputs(fileId, workDir);
+        }
+
+        minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
+    }
+
+    private void uploadSingleOutputs(String fileId, Path workDir) throws IOException {
+        Path playlist = workDir.resolve("index.m3u8");
+        if (!Files.isRegularFile(playlist)) {
+            throw new IllegalStateException("missing index.m3u8 after transcode");
+        }
+
         // 先上传切片，再上传清单，避免播放器拿到清单却拉不到 ts
-        try (DirectoryStream<Path> stream = Files.newDirectoryStream(workDir, "segment_*.ts")) {
+        uploadSegments(workDir, fileId, "");
+        minioStorage.uploadFile(ObjectKeys.hlsPlaylist(fileId), playlist, "application/vnd.apple.mpegurl");
+    }
+
+    private void uploadAbrOutputs(String fileId, Path workDir) throws IOException {
+        Path master = workDir.resolve("master.m3u8");
+        if (!Files.isRegularFile(master)) {
+            throw new IllegalStateException("missing master.m3u8 after abr transcode");
+        }
+
+        // 先传齐所有档位的 ts 与子清单，再传 master，避免 master 先可见但子档缺失
+        for (AbrProperties.Variant v : abrProperties.variants()) {
+            Path variantDir = workDir.resolve(v.label());
+            Path variantPlaylist = variantDir.resolve("index.m3u8");
+            if (!Files.isRegularFile(variantPlaylist)) {
+                throw new IllegalStateException("missing " + v.label() + "/index.m3u8 after abr transcode");
+            }
+            uploadSegments(variantDir, fileId, v.label());
+            minioStorage.uploadFile(ObjectKeys.hlsVariantPlaylist(fileId, v.label()),
+                    variantPlaylist, "application/vnd.apple.mpegurl");
+        }
+
+        minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
+    }
+
+    /**
+     * 上传目录下 segment_*.ts。label 为空表示首期根目录。
+     */
+    private void uploadSegments(Path dir, String fileId, String label) throws IOException {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "segment_*.ts")) {
             for (Path segment : stream) {
                 String name = segment.getFileName().toString();
-                // segment_012.ts → 下标 12，与 ObjectKeys.hlsSegment 的 %03d 对齐
+                // segment_012.ts → 下标 12，与 ObjectKeys 的 %03d 对齐
                 int index = Integer.parseInt(name.substring("segment_".length(), name.length() - ".ts".length()));
-                minioStorage.uploadFile(ObjectKeys.hlsSegment(fileId, index), segment, "video/MP2T");
+                String objectKey = label.isEmpty()
+                        ? ObjectKeys.hlsSegment(fileId, index)
+                        : ObjectKeys.hlsVariantSegment(fileId, label, index);
+                minioStorage.uploadFile(objectKey, segment, "video/MP2T");
             }
         }
-        minioStorage.uploadFile(ObjectKeys.hlsPlaylist(fileId), playlist, "application/vnd.apple.mpegurl");
-        minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
     }
 
     /**

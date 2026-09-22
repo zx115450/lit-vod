@@ -38,13 +38,15 @@ play-sign:
   public-base: ${VOD_PLAY_PUBLIC_BASE:http://localhost:8080}
   ttl-seconds: ${VOD_PLAY_TTL_SECONDS:3600}
 
-# 上传配置（二期）：分片上传默认关闭，前端按文件大小分流
+# 上传配置（二期）：multipart-enabled 由配置绑定，关闭时接口返回 501
 vod:
   upload:
     multipart-enabled: ${VOD_UPLOAD_MULTIPART_ENABLED:true}
     min-part-size: ${VOD_UPLOAD_MIN_PART_SIZE:5242880}      # 5 MiB
     max-part-size: ${VOD_UPLOAD_MAX_PART_SIZE:67108864}      # 64 MiB
     default-part-size: ${VOD_UPLOAD_DEFAULT_PART_SIZE:10485760} # 10 MiB
+  # 播放清单以 media.media_url 为准（master.m3u8 或 index.m3u8）。
+  # vod.abr.enabled 只在 Worker 上决定新任务是否转多档，见 vod-worker application.yml。
 
 logging:
   level:

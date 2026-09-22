@@ -105,12 +105,40 @@
       background: var(--accent);
       transition: width 0.15s linear;
     }
+    .abr-panel {
+      display: none;
+      margin: 0 0 0.75rem;
+      padding: 0.65rem 0.75rem;
+      background: var(--panel);
+      border: 1px solid #2c3a4f;
+      border-radius: 6px;
+    }
+    .abr-panel.on { display: block; }
+    .abr-meta {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin: 0 0 0.5rem;
+    }
+    .abr-levels {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+    }
+    .abr-levels button {
+      padding: 0.35rem 0.7rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      background: #2c3a4f;
+    }
+    .abr-levels button.active {
+      background: var(--accent);
+    }
   </style>
 </head>
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">整文件：申请凭证 → PUT MinIO → commit。分片：申请 multipart 凭证 → 按片 PUT → 合并 → commit。播放须媒资状态为「已完成」。</p>
+    <p class="hint">整文件：申请凭证 → PUT MinIO → commit。分片：申请 multipart 凭证 → 按片 PUT → 合并 → commit。播放须媒资状态为「已完成」。多码率由 Worker 的 VOD_ABR_ENABLED 决定；播放签发按 media_url 自动选 master / index。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
@@ -129,6 +157,10 @@
     </div>
     <p id="err" class="msg err"></p>
     <p id="url"></p>
+    <div id="abrPanel" class="abr-panel">
+      <p id="abrMeta" class="abr-meta"></p>
+      <div id="abrLevels" class="abr-levels"></div>
+    </div>
     <video id="video" controls playsinline></video>
   </main>
   <script>
@@ -151,11 +183,87 @@
       const refreshBtn = document.getElementById('refreshBtn');
       const errEl = document.getElementById('err');
       const urlEl = document.getElementById('url');
+      const abrPanel = document.getElementById('abrPanel');
+      const abrMeta = document.getElementById('abrMeta');
+      const abrLevels = document.getElementById('abrLevels');
       const video = document.getElementById('video');
 
       function setUploadMsg(text, kind) {
         uploadMsg.textContent = text || '';
         uploadMsg.className = 'msg ' + (kind || 'info');
+      }
+
+      function hideAbrPanel() {
+        abrPanel.classList.remove('on');
+        abrMeta.textContent = '';
+        abrLevels.innerHTML = '';
+      }
+
+      function formatLevel(level, index) {
+        if (!level) return '档' + index;
+        const h = level.height || 0;
+        const bw = level.bitrate ? Math.round(level.bitrate / 1000) + 'kbps' : '';
+        if (h) return h + 'p' + (bw ? ' · ' + bw : '');
+        return 'L' + index + (bw ? ' · ' + bw : '');
+      }
+
+      function markActiveAbrButton(current) {
+        const buttons = abrLevels.querySelectorAll('button');
+        buttons.forEach(function (btn) {
+          const v = btn.getAttribute('data-level');
+          const active = (current === -1 && v === 'auto') || String(current) === v;
+          btn.classList.toggle('active', active);
+        });
+      }
+
+      function renderAbrControls() {
+        hideAbrPanel();
+        if (!hls || !hls.levels || hls.levels.length === 0) {
+          return;
+        }
+        const levels = hls.levels;
+        const isAbr = levels.length > 1;
+        abrPanel.classList.add('on');
+        abrMeta.textContent = isAbr
+          ? ('ABR 多码率：共 ' + levels.length + ' 档（可点选或保持 Auto 自适应）')
+          : '单档播放（非 ABR / 仅一档清单）';
+
+        const autoBtn = document.createElement('button');
+        autoBtn.type = 'button';
+        autoBtn.textContent = 'Auto';
+        autoBtn.setAttribute('data-level', 'auto');
+        autoBtn.disabled = !isAbr;
+        autoBtn.addEventListener('click', function () {
+          if (!hls) return;
+          hls.currentLevel = -1;
+          markActiveAbrButton(-1);
+          abrMeta.textContent = 'ABR：Auto（播放器按带宽自动升降档）';
+        });
+        abrLevels.appendChild(autoBtn);
+
+        levels.forEach(function (level, index) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.textContent = formatLevel(level, index);
+          btn.setAttribute('data-level', String(index));
+          btn.addEventListener('click', function () {
+            if (!hls) return;
+            hls.currentLevel = index;
+            markActiveAbrButton(index);
+            abrMeta.textContent = '已锁定：' + formatLevel(level, index);
+          });
+          abrLevels.appendChild(btn);
+        });
+
+        markActiveAbrButton(hls.currentLevel);
+        hls.on(Hls.Events.LEVEL_SWITCHED, function (_e, data) {
+          if (hls.autoLevelEnabled) {
+            abrMeta.textContent = 'ABR Auto → 当前 ' + formatLevel(hls.levels[data.level], data.level);
+            markActiveAbrButton(-1);
+          } else {
+            markActiveAbrButton(data.level);
+          }
+        });
       }
 
       async function readJson(res) {
@@ -400,6 +508,7 @@
           hls.destroy();
           hls = null;
         }
+        hideAbrPanel();
         video.removeAttribute('src');
         video.load();
       }
@@ -417,17 +526,25 @@
       function attachSource(playUrl) {
         destroyHls();
         const src = toPlayableUrl(playUrl);
-        urlEl.textContent = 'playUrl: ' + src;
+        const isMaster = /\/master\.m3u8(\?|$)/i.test(src);
+        urlEl.textContent = (isMaster ? '[ABR master] ' : '[单档 index] ') + 'playUrl: ' + src;
 
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
           video.src = src;
           video.play().catch(function () {});
+          abrPanel.classList.add('on');
+          abrMeta.textContent = isMaster
+            ? 'Safari 原生 HLS：由系统自动 ABR，本页不提供手动切档'
+            : 'Safari 原生 HLS：单档清单';
           return;
         }
         if (window.Hls && Hls.isSupported()) {
           hls = new Hls({ enableWorker: true });
           hls.loadSource(src);
           hls.attachMedia(video);
+          hls.on(Hls.Events.MANIFEST_PARSED, function () {
+            renderAbrControls();
+          });
           hls.on(Hls.Events.ERROR, function (_e, data) {
             if (data.fatal) {
               errEl.textContent = '播放失败: ' + (data.type || '') + ' / ' + (data.details || 'fatal');
@@ -443,6 +560,7 @@
         const fileId = fileIdEl.value.trim();
         errEl.textContent = '';
         urlEl.textContent = '';
+        hideAbrPanel();
         if (!fileId) {
           errEl.textContent = '请输入 fileId';
           return;
@@ -474,8 +592,12 @@
         }
         try {
           const m = await fetchMedia(fileId);
+          const mediaUrl = m.mediaUrl || '';
+          const abrHint = /master\.m3u8$/i.test(mediaUrl)
+            ? '（ABR：media_url=master.m3u8）'
+            : (mediaUrl ? '（单档：' + mediaUrl + '）' : '');
           errEl.className = 'msg ok';
-          errEl.textContent = '状态=' + (m.statusText || m.status) +
+          errEl.textContent = '状态=' + (m.statusText || m.status) + abrHint +
             (m.errorMsg ? ('  ' + m.errorMsg) : '');
         } catch (e) {
           errEl.className = 'msg err';

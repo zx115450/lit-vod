@@ -7,8 +7,8 @@ import java.util.regex.Pattern;
 /**
  * 播放路径约定：请求 URI {@code /hls/{fileId}/...} ↔ MinIO key {@code hls/{fileId}/...}。
  *
- * <p>第 10 步签发绑定的是完整 playlist 路径 {@code /hls/{fileId}/index.m3u8}；
- * 本步验签时用该路径重算签名，同时要求请求 URI 落在同一 {@code fileId} 目录下。
+ * <p>签发绑定的是该媒资实际清单：{@code media_url} 以 {@code master.m3u8} 结尾则绑 master，
+ * 否则绑 {@code index.m3u8}。验签重算同一路径，请求 URI 必须落在同一 {@code fileId} 目录下。
  */
 public final class PlayPathSupport {
 
@@ -17,7 +17,20 @@ public final class PlayPathSupport {
     private PlayPathSupport() {
     }
 
-    public record HlsRequest(String fileId, String relativePath, String requestPath, String signedPath, String objectKey) {
+    public record HlsRequest(String fileId, String relativePath, String requestPath, String objectKey) {
+    }
+
+    /**
+     * 该 fileId 下被签名的 playlist 路径，由转码写回的 {@code media_url} 决定。
+     *
+     * <p>{@code hls/{fileId}/master.m3u8} → master；空、单档或其他值 → {@code index.m3u8}。
+     * 子档与切片共用这一条签名 path。
+     */
+    public static String signedPlaylistPath(String fileId, String mediaUrl) {
+        String playlist = mediaUrl != null && mediaUrl.endsWith("master.m3u8")
+                ? "master.m3u8"
+                : "index.m3u8";
+        return "/hls/" + fileId + "/" + playlist;
     }
 
     public static Optional<HlsRequest> parse(String requestUri) {
@@ -38,9 +51,8 @@ public final class PlayPathSupport {
             return Optional.empty();
         }
         String requestPath = "/hls/" + fileId + "/" + relative;
-        String signedPath = "/hls/" + fileId + "/index.m3u8";
         String objectKey = "hls/" + fileId + "/" + relative;
-        return Optional.of(new HlsRequest(fileId, relative, requestPath, signedPath, objectKey));
+        return Optional.of(new HlsRequest(fileId, relative, requestPath, objectKey));
     }
 
     public static String contentType(String relativePath) {
