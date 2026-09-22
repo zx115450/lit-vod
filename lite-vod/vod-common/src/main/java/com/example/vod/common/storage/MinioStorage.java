@@ -267,13 +267,24 @@ public class MinioStorage {
         }
     }
 
-    public void removePrefix(String prefix) {
+    /**
+     * 列出指定前缀下所有对象。
+     */
+    public Iterable<Result<Item>> listObjectsByPrefix(String prefix) {
         try {
-            Iterable<Result<Item>> results = minioClient.listObjects(ListObjectsArgs.builder()
+            return minioClient.listObjects(ListObjectsArgs.builder()
                     .bucket(props.bucket())
                     .prefix(prefix)
                     .recursive(true)
                     .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("list objects failed: " + prefix, e);
+        }
+    }
+
+    public void removePrefix(String prefix) {
+        try {
+            Iterable<Result<Item>> results = listObjectsByPrefix(prefix);
             for (Result<Item> result : results) {
                 Item item = result.get();
                 minioClient.removeObject(RemoveObjectArgs.builder()

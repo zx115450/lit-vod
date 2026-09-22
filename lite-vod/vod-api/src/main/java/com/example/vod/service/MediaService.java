@@ -1,5 +1,7 @@
 package com.example.vod.service;
 
+import com.example.vod.common.config.AbrProperties;
+import com.example.vod.common.domain.media.LadderStatus;
 import com.example.vod.common.messaging.RabbitConfig;
 import com.example.vod.controller.dto.MediaDto;
 import com.example.vod.controller.dto.PageResult;
@@ -31,24 +33,35 @@ public class MediaService {
     private final MediaTaskMapper mediaTaskMapper;
     private final MinioStorage minioStorage;
     private final RabbitTemplate rabbitTemplate;
+    private final AbrProperties abrProperties;
 
     public MediaService(MediaMapper mediaMapper,
                         MediaTaskMapper mediaTaskMapper,
                         MinioStorage minioStorage,
-                        RabbitTemplate rabbitTemplate) {
+                        RabbitTemplate rabbitTemplate,
+                        AbrProperties abrProperties) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
         this.minioStorage = minioStorage;
         this.rabbitTemplate = rabbitTemplate;
+        this.abrProperties = abrProperties;
     }
 
     @Transactional
     public MediaDto commit(String fileId, String filename) {
+        return commit(fileId, filename, null);
+    }
+
+    /**
+     * @param progressiveOverride {@code null} 用配置；非空则按请求决定渐进式 / 一次出齐
+     */
+    @Transactional
+    public MediaDto commit(String fileId, String filename, Boolean progressiveOverride) {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
 
-        // 已处理完成的媒资直接幂等返回
-        if (media.getStatus() == MediaStatus.FINISHED) {
+        // 已可播或已完成的媒资直接幂等返回
+        if (media.getStatus() == MediaStatus.FINISHED || media.getStatus() == MediaStatus.PLAYABLE) {
             return toDto(media);
         }
 
@@ -84,8 +97,18 @@ public class MediaService {
         mediaMapper.updateUploaded(fileId, filename, size, MediaStatus.PROCESSING);
 
         // 投递转码任务消息；发送失败时事务回滚，避免状态不一致
+        // 请求显式传 progressive 时覆盖配置；开启时只投快档，Worker 完成后再自投递补档。
+        boolean progressive = progressiveOverride != null
+                ? progressiveOverride
+                : abrProperties.progressiveEnabled();
+        ProcedureTaskMessage.TaskType taskType = progressive
+                ? ProcedureTaskMessage.TaskType.FAST
+                : ProcedureTaskMessage.TaskType.FULL;
         ProcedureTaskMessage message = new ProcedureTaskMessage(
-                fileId, media.getId(), media.getObjectKey(), task.getId());
+                fileId, media.getId(), media.getObjectKey(), task.getId(), taskType, progressive);
+        if (progressive) {
+            mediaMapper.updateLadderFinished(fileId, MediaStatus.PROCESSING, null, LadderStatus.PENDING.code());
+        }
         rabbitTemplate.convertAndSend(RabbitConfig.EXCHANGE_NAME, RabbitConfig.ROUTING_KEY, message);
 
         Media updated = Optional.ofNullable(mediaMapper.findByFileId(fileId))

@@ -78,7 +78,7 @@ hls/{fileId}/master.m3u8
 | `ProcedureConsumer` | 上传 master + 各档目录；失败任一档则整任务 FAILED（或降级只出 720p，需产品决策） |
 | `PlaySignatureService` | `path` 改为 `/hls/{fileId}/master.m3u8` |
 | `PlayPathSupport` / 网关 | 确认相对 URI 改写对 `720p/segment_000.ts` 生效 |
-| 配置 | `worker.abr.enabled`、档位列表环境变量 |
+| 配置 | `vod.abr.enabled`、`vod.abr.progressive-enabled`、档位列表环境变量 |
 
 ## 5. 兼容策略
 
@@ -103,3 +103,7 @@ hls/{fileId}/master.m3u8
 
 - master 先上传、子档未齐导致播放失败 → 先传齐变体再传 master（同首期「先 ts 后 m3u8」）
 - BANDWIDTH 填写不准影响选档 → 可用 ffprobe 估算或按表固定
+
+## 9. 相关：渐进式多档（远期）
+
+若希望「先出低清可播、再异步补 480p/720p」，见 [渐进式多档转码](./远期能力实现思路/05-渐进式多档转码.md)。与本文「一次出齐」是两种产品策略，建议分 PR。

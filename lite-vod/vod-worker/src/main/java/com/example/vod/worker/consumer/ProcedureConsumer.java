@@ -7,8 +7,10 @@ import com.example.vod.worker.config.WorkerProperties;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
 import com.example.vod.common.domain.media.MediaTask;
+import com.example.vod.common.domain.media.LadderStatus;
 import com.example.vod.common.domain.media.MediaTaskMapper;
 import com.example.vod.common.domain.media.MediaTaskStatus;
+import com.example.vod.common.domain.media.MediaTaskType;
 import com.example.vod.worker.ffmpeg.FfmpegService;
 import com.example.vod.worker.ffmpeg.TranscodeException;
 import com.example.vod.common.messaging.ProcedureTaskMessage;
@@ -18,6 +20,7 @@ import com.example.vod.common.storage.ObjectKeys;
 import com.rabbitmq.client.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
@@ -28,32 +31,18 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.List;
 import java.util.stream.Stream;
 
 /**
- * 转码任务消费者，对应步骤 09 消费逻辑：
+ * 转码任务消费者，对应步骤 09 消费逻辑。
  *
- * <pre>
- * 1. 收到 {fileId, objectKey, taskId}
- * 2. 更新 task=RUNNING，attempt+1
- * 3. 下载到 {tempDir}/{fileId}/source.mp4
- * 4. FFmpeg：HLS + 封面
- * 5. 上传 hls/{fileId}/* 与 cover/{fileId}.jpg
- * 6. ffprobe 取 duration，更新 media=PROCESSED，写入 media_url、cover_url
- * 7. task=SUCCESS，finished_at
- * 8. 异步 Webhook（VOD_CALLBACK_URL），不阻塞清理
- * 9. 删除本地临时目录
- * </pre>
- *
- * <p>失败处理：
+ * <p>支持两种模式：
  * <ul>
- *   <li>media.status=FAILED，error_msg 截断到 512</li>
- *   <li>task.status=FAILED</li>
- *   <li>attempt &lt; maxAttempts 时 requeue 让 MQ 重试；超过则 ack 停止（毒消息保护）并 Webhook FAILED</li>
- *   <li>超限（时长 &gt; 6 小时）直接 FAILED 且不重试，Webhook FAILED</li>
+ *   <li>一期 {@code FULL}：下载 → 截封面 → 一次出齐 HLS（单档或 ABR）→ 上传 → 标 FINISHED。</li>
+ *   <li>二期渐进式 {@code FAST/LADDER}：快档先出可播并标 PLAYABLE，Worker 再自投递 LADDER 补档，
+ *       全部补完后标 FINISHED。补档失败不把已可播媒资打成 FAILED。</li>
  * </ul>
- *
- * <p>临时目录在 finally 中无条件清理，避免磁盘泄漏。
  */
 @Slf4j
 @Component
@@ -71,6 +60,7 @@ public class ProcedureConsumer {
     private final WorkerProperties props;
     private final AbrProperties abrProperties;
     private final CallbackNotifier callbackNotifier;
+    private final RabbitTemplate rabbitTemplate;
 
     public ProcedureConsumer(MediaMapper mediaMapper,
                              MediaTaskMapper mediaTaskMapper,
@@ -78,7 +68,8 @@ public class ProcedureConsumer {
                              FfmpegService ffmpegService,
                              WorkerProperties props,
                              AbrProperties abrProperties,
-                             CallbackNotifier callbackNotifier) {
+                             CallbackNotifier callbackNotifier,
+                             RabbitTemplate rabbitTemplate) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
         this.minioStorage = minioStorage;
@@ -86,6 +77,7 @@ public class ProcedureConsumer {
         this.props = props;
         this.abrProperties = abrProperties;
         this.callbackNotifier = callbackNotifier;
+        this.rabbitTemplate = rabbitTemplate;
     }
 
     @RabbitListener(queues = "${worker.queue-name:vod.procedure}", concurrency = "${worker.concurrency:1}")
@@ -94,13 +86,12 @@ public class ProcedureConsumer {
                           Channel channel) throws IOException {
         String fileId = message.fileId();
         Long taskId = message.taskId();
-        log.info("received task fileId={} taskId={} objectKey={}", fileId, taskId, message.objectKey());
+        log.info("received task fileId={} taskId={} taskType={} progressive={}",
+                fileId, taskId, message.taskType(), message.isProgressive());
 
         Path workDir = Path.of(props.tempDir(), fileId);
-        // attempt 在 try 内更新；catch 里若 attempt 还是 0 表示任务行没读到 / RUNNING 没更新成功，按首次失败处理
         int attempt = 0;
         try {
-            // 1. 校验任务行存在；防止已删任务被重投
             MediaTask task = mediaTaskMapper.findById(taskId);
             if (task == null) {
                 log.warn("task not found, ack and drop: taskId={}", taskId);
@@ -108,52 +99,30 @@ public class ProcedureConsumer {
                 return;
             }
 
-            // 2. RUNNING + attempt+1
             attempt = (task.getAttempt() == null ? 0 : task.getAttempt()) + 1;
             mediaTaskMapper.updateRunning(taskId, MediaTaskStatus.RUNNING, attempt);
-            log.info("task running taskId={} attempt={}", taskId, attempt);
+            log.info("task running taskId={} attempt={} taskType={}", taskId, attempt, message.taskType());
 
-            // 3. 下载原片
             Files.createDirectories(workDir);
             minioStorage.download(message.objectKey(), workDir.resolve("source.mp4"));
 
-            // 4. 先探时长，用于：判定超限 + 决定封面起始时间
             double duration = ffmpegService.probeDuration(workDir);
             if (duration > props.maxDurationSec()) {
                 String msg = String.format("duration %.0fs exceeds limit %ds", duration, props.maxDurationSec());
                 log.warn("duration over limit, mark FAILED without retry: fileId={} {}", fileId, msg);
                 failTaskAndMedia(taskId, fileId, msg);
-                // 终态失败才回调，避免重试中间态把业务打成 FAILED
                 callbackNotifier.notifyAsync(CallbackPayload.failed(fileId, msg));
                 ack(channel, deliveryTag);
                 return;
             }
 
-            // 5. 转码 HLS
-            ffmpegService.transcodeHls(workDir);
-
-            // 6. 截封面（片长短于 3 秒用 0 秒）
             String startTime = duration < SHORT_THRESHOLD_SEC ? COVER_START_TIME_SHORT : COVER_START_TIME_NORMAL;
-            ffmpegService.captureCover(workDir, startTime);
 
-            // 7. 上传 HLS + 封面（先上传再改库，避免库已 PROCESSED 但桶里缺切片）
-            uploadTranscodeOutputs(fileId, workDir);
-
-            // 8. 写回 media = PROCESSED
-            String mediaUrl = ffmpegService.isAbrEnabled()
-                    ? ObjectKeys.hlsMaster(fileId)
-                    : ObjectKeys.hlsPlaylist(fileId);
-            String coverUrl = ObjectKeys.cover(fileId);
-            mediaMapper.updateProcessed(fileId, MediaStatus.FINISHED, mediaUrl, coverUrl, (float) duration);
-
-            // 9. task = SUCCESS
-            mediaTaskMapper.updateFinished(taskId, MediaTaskStatus.SUCCESS, null);
-            log.info("task success fileId={} taskId={} duration={}s", fileId, taskId, duration);
-
-            // 10. Webhook（异步，不阻塞 finally 清临时目录；失败不影响已 PROCESSED）
-            callbackNotifier.notifyAsync(CallbackPayload.processed(fileId, coverUrl, duration));
-
-            ack(channel, deliveryTag);
+            switch (message.taskType()) {
+                case FAST -> doFast(message, workDir, duration, startTime, channel, deliveryTag);
+                case LADDER -> doLadder(message, workDir, duration, startTime, channel, deliveryTag);
+                default -> doFull(message, workDir, duration, startTime, channel, deliveryTag);
+            }
         } catch (Exception e) {
             handleFailure(taskId, fileId, attempt, e, channel, deliveryTag);
         } finally {
@@ -162,11 +131,102 @@ public class ProcedureConsumer {
     }
 
     /**
-     * 上传 HLS 产物 + 封面。
-     * ABR 开启时：各档 segment + index 先传齐，最后传 master.m3u8。
-     * ABR 关闭时：与首期一致，传根目录 segment + index.m3u8。
-     * 任一上传失败抛异常，整任务 FAILED，不会出现「仅清单成功却标 PROCESSED」。
+     * 一期一次出齐逻辑，兼容旧消息与未开启渐进式的情况。
      */
+    private void doFull(ProcedureTaskMessage message, Path workDir, double duration,
+                        String startTime, Channel channel, long deliveryTag) throws IOException {
+        String fileId = message.fileId();
+        Long taskId = message.taskId();
+
+        ffmpegService.transcodeHls(workDir);
+        ffmpegService.captureCover(workDir, startTime);
+        uploadTranscodeOutputs(fileId, workDir);
+
+        String mediaUrl = ffmpegService.isAbrEnabled()
+                ? ObjectKeys.hlsMaster(fileId)
+                : ObjectKeys.hlsPlaylist(fileId);
+        String coverUrl = ObjectKeys.cover(fileId);
+        mediaMapper.updateProcessed(fileId, MediaStatus.FINISHED, mediaUrl, coverUrl, (float) duration);
+
+        mediaTaskMapper.updateFinished(taskId, MediaTaskStatus.SUCCESS, null);
+        log.info("task success fileId={} taskId={} duration={}s mode=FULL", fileId, taskId, duration);
+        callbackNotifier.notifyAsync(CallbackPayload.processed(fileId, coverUrl, duration));
+        ack(channel, deliveryTag);
+    }
+
+    /**
+     * 快路径：只出首档（默认 360p）→ 标 PLAYABLE → 投递 LADDER 消息。
+     */
+    private void doFast(ProcedureTaskMessage message, Path workDir, double duration,
+                        String startTime, Channel channel, long deliveryTag) throws IOException {
+        String fileId = message.fileId();
+        Long taskId = message.taskId();
+
+        ffmpegService.transcodeFast(workDir);
+        ffmpegService.captureCover(workDir, startTime);
+        uploadFastOutputs(fileId, workDir);
+
+        String mediaUrl = ObjectKeys.hlsMaster(fileId);
+        String coverUrl = ObjectKeys.cover(fileId);
+        mediaMapper.updateProcessed(fileId, MediaStatus.PLAYABLE, mediaUrl, coverUrl, (float) duration);
+        mediaMapper.updateLadderFinished(fileId, MediaStatus.PLAYABLE, coverUrl, LadderStatus.RUNNING.code());
+
+        mediaTaskMapper.updateFinished(taskId, MediaTaskStatus.SUCCESS, null);
+        log.info("task success fileId={} taskId={} duration={}s mode=FAST -> PLAYABLE", fileId, taskId, duration);
+
+        // 投递补档任务；MQ 投递失败不重试本次任务，避免无限循环
+        try {
+            MediaTask ladderTask = new MediaTask();
+            ladderTask.setMediaId(message.mediaId());
+            ladderTask.setFileId(fileId);
+            ladderTask.setType(MediaTaskType.PROCEDURE);
+            ladderTask.setStatus(MediaTaskStatus.PENDING);
+            ladderTask.setAttempt(0);
+            mediaTaskMapper.insert(ladderTask);
+
+            ProcedureTaskMessage ladderMessage = new ProcedureTaskMessage(
+                    fileId, message.mediaId(), message.objectKey(), ladderTask.getId(),
+                    ProcedureTaskMessage.TaskType.LADDER, true);
+            rabbitTemplate.convertAndSend(
+                    com.example.vod.common.messaging.RabbitConfig.EXCHANGE_NAME,
+                    com.example.vod.common.messaging.RabbitConfig.ROUTING_KEY,
+                    ladderMessage);
+            log.info("ladder task dispatched fileId={} ladderTaskId={}", fileId, ladderTask.getId());
+        } catch (Exception e) {
+            // 补档投递失败不影响已可播；业务可监控告警后手动/定时重补
+            log.error("dispatch ladder task failed fileId={}: {}", fileId, e.toString(), e);
+        }
+
+        callbackNotifier.notifyAsync(CallbackPayload.processed(fileId, coverUrl, duration));
+        ack(channel, deliveryTag);
+    }
+
+    /**
+     * 补档路径：出剩余档位 → 按桶内已有档位重写 master → 标 FINISHED。
+     * 补档失败只把本任务标 FAILED，不污染媒资状态。
+     */
+    private void doLadder(ProcedureTaskMessage message, Path workDir, double duration,
+                          String startTime, Channel channel, long deliveryTag) throws IOException {
+        String fileId = message.fileId();
+        Long taskId = message.taskId();
+
+        ffmpegService.transcodeLadder(workDir);
+        ffmpegService.captureCover(workDir, startTime);
+        uploadLadderOutputs(fileId, workDir);
+
+        // 按桶内（含本次新上传）已有档位重写 master
+        ffmpegService.writeMasterFromExisting(workDir, fileId);
+        uploadMasterOnly(fileId, workDir);
+
+        String coverUrl = ObjectKeys.cover(fileId);
+        mediaMapper.updateLadderFinished(fileId, MediaStatus.FINISHED, coverUrl, LadderStatus.READY.code());
+
+        mediaTaskMapper.updateFinished(taskId, MediaTaskStatus.SUCCESS, null);
+        log.info("task success fileId={} taskId={} duration={}s mode=LADDER -> FINISHED", fileId, taskId, duration);
+        callbackNotifier.notifyAsync(CallbackPayload.processed(fileId, coverUrl, duration));
+        ack(channel, deliveryTag);
+    }
+
     private void uploadTranscodeOutputs(String fileId, Path workDir) throws IOException {
         Path cover = workDir.resolve("cover.jpg");
         if (!Files.isRegularFile(cover)) {
@@ -174,7 +234,7 @@ public class ProcedureConsumer {
         }
 
         if (ffmpegService.isAbrEnabled()) {
-            uploadAbrOutputs(fileId, workDir);
+            uploadAbrOutputs(fileId, workDir, abrProperties.variants());
         } else {
             uploadSingleOutputs(fileId, workDir);
         }
@@ -187,20 +247,66 @@ public class ProcedureConsumer {
         if (!Files.isRegularFile(playlist)) {
             throw new IllegalStateException("missing index.m3u8 after transcode");
         }
-
-        // 先上传切片，再上传清单，避免播放器拿到清单却拉不到 ts
         uploadSegments(workDir, fileId, "");
         minioStorage.uploadFile(ObjectKeys.hlsPlaylist(fileId), playlist, "application/vnd.apple.mpegurl");
     }
 
-    private void uploadAbrOutputs(String fileId, Path workDir) throws IOException {
+    private void uploadFastOutputs(String fileId, Path workDir) throws IOException {
+        Path cover = workDir.resolve("cover.jpg");
+        if (!Files.isRegularFile(cover)) {
+            throw new IllegalStateException("missing cover.jpg after fast transcode");
+        }
+
+        AbrProperties.Variant fast = abrProperties.fastVariantConfig();
+        Path variantDir = workDir.resolve(fast.label());
+        Path variantPlaylist = variantDir.resolve("index.m3u8");
+        if (!Files.isRegularFile(variantPlaylist)) {
+            throw new IllegalStateException("missing " + fast.label() + "/index.m3u8 after fast transcode");
+        }
+        uploadSegments(variantDir, fileId, fast.label());
+        minioStorage.uploadFile(ObjectKeys.hlsVariantPlaylist(fileId, fast.label()),
+                variantPlaylist, "application/vnd.apple.mpegurl");
+
+        // 首版 master 只含快档
+        ffmpegService.writeMasterForVariants(workDir, List.of(fast));
+        Path master = workDir.resolve("master.m3u8");
+        if (!Files.isRegularFile(master)) {
+            throw new IllegalStateException("missing master.m3u8 after fast transcode");
+        }
+        minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
+
+        minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
+    }
+
+    private void uploadLadderOutputs(String fileId, Path workDir) throws IOException {
+        List<AbrProperties.Variant> ladder = abrProperties.ladderVariants();
+        for (AbrProperties.Variant v : ladder) {
+            Path variantDir = workDir.resolve(v.label());
+            Path variantPlaylist = variantDir.resolve("index.m3u8");
+            if (!Files.isRegularFile(variantPlaylist)) {
+                throw new IllegalStateException("missing " + v.label() + "/index.m3u8 after ladder transcode");
+            }
+            uploadSegments(variantDir, fileId, v.label());
+            minioStorage.uploadFile(ObjectKeys.hlsVariantPlaylist(fileId, v.label()),
+                    variantPlaylist, "application/vnd.apple.mpegurl");
+        }
+    }
+
+    private void uploadMasterOnly(String fileId, Path workDir) throws IOException {
+        Path master = workDir.resolve("master.m3u8");
+        if (!Files.isRegularFile(master)) {
+            throw new IllegalStateException("missing master.m3u8 after ladder");
+        }
+        minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
+    }
+
+    private void uploadAbrOutputs(String fileId, Path workDir, List<AbrProperties.Variant> variants) throws IOException {
         Path master = workDir.resolve("master.m3u8");
         if (!Files.isRegularFile(master)) {
             throw new IllegalStateException("missing master.m3u8 after abr transcode");
         }
 
-        // 先传齐所有档位的 ts 与子清单，再传 master，避免 master 先可见但子档缺失
-        for (AbrProperties.Variant v : abrProperties.variants()) {
+        for (AbrProperties.Variant v : variants) {
             Path variantDir = workDir.resolve(v.label());
             Path variantPlaylist = variantDir.resolve("index.m3u8");
             if (!Files.isRegularFile(variantPlaylist)) {
@@ -214,14 +320,10 @@ public class ProcedureConsumer {
         minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
     }
 
-    /**
-     * 上传目录下 segment_*.ts。label 为空表示首期根目录。
-     */
     private void uploadSegments(Path dir, String fileId, String label) throws IOException {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "segment_*.ts")) {
             for (Path segment : stream) {
                 String name = segment.getFileName().toString();
-                // segment_012.ts → 下标 12，与 ObjectKeys 的 %03d 对齐
                 int index = Integer.parseInt(name.substring("segment_".length(), name.length() - ".ts".length()));
                 String objectKey = label.isEmpty()
                         ? ObjectKeys.hlsSegment(fileId, index)
@@ -231,9 +333,6 @@ public class ProcedureConsumer {
         }
     }
 
-    /**
-     * 失败统一处理：写 FAILED + error_msg；attempt &lt; maxAttempts 时 requeue 重试，否则 ack 停止。
-     */
     private void handleFailure(Long taskId, String fileId, int attempt, Throwable cause,
                                Channel channel, long deliveryTag) throws IOException {
         String errorMsg = summarize(cause);
@@ -242,10 +341,8 @@ public class ProcedureConsumer {
 
         failTaskAndMedia(taskId, fileId, errorMsg);
 
-        // attempt == 0 表示任务行没读到 / RUNNING 没更新成功，按首次失败处理，允许重试
         int effectiveAttempt = Math.max(attempt, 1);
         if (effectiveAttempt < props.maxAttempts()) {
-            // requeue 让 MQ 重投，触发下一次 attempt；中间失败不发 Webhook
             log.info("requeue for retry fileId={} taskId={}", fileId, taskId);
             channel.basicReject(deliveryTag, true);
         } else {
@@ -261,9 +358,6 @@ public class ProcedureConsumer {
         mediaTaskMapper.updateFinished(taskId, MediaTaskStatus.FAILED, errorMsg);
     }
 
-    /**
-     * 把异常摘要成单行 error_msg：优先用 TranscodeException / CommandTimeoutException 自带的截断输出。
-     */
     private static String summarize(Throwable e) {
         if (e instanceof TranscodeException te && te.truncatedOutput() != null && !te.truncatedOutput().isBlank()) {
             return te.getMessage() + " | " + te.truncatedOutput();
@@ -279,9 +373,6 @@ public class ProcedureConsumer {
         channel.basicAck(deliveryTag, false);
     }
 
-    /**
-     * 递归删除工作目录，含成功与失败两条路径，避免磁盘泄漏。
-     */
     private static void cleanup(Path workDir) {
         if (workDir == null || !Files.exists(workDir)) {
             return;
@@ -292,7 +383,6 @@ public class ProcedureConsumer {
                         try {
                             Files.deleteIfExists(p);
                         } catch (IOException ignore) {
-                            // 删除失败不影响主流程，下次启动可由外部清理
                         }
                     });
         } catch (IOException e) {

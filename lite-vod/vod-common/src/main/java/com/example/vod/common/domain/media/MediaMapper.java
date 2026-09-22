@@ -20,12 +20,12 @@ import java.util.List;
 @Mapper
 public interface MediaMapper {
 
-    @Select("SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, error_msg, create_time, update_time " +
+    @Select("SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg, create_time, update_time " +
             "FROM media WHERE file_id = #{fileId}")
     Media findByFileId(String fileId);
 
-    @Insert("INSERT INTO media (file_id, object_key, filename, media_url, cover_url, duration, size, status, error_msg) " +
-            "VALUES (#{fileId}, #{objectKey}, #{filename}, #{mediaUrl}, #{coverUrl}, #{duration}, #{size}, #{status}, #{errorMsg})")
+    @Insert("INSERT INTO media (file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg) " +
+            "VALUES (#{fileId}, #{objectKey}, #{filename}, #{mediaUrl}, #{coverUrl}, #{duration}, #{size}, #{status}, #{ladderStatus}, #{errorMsg})")
     void insert(Media media);
 
     @Update("UPDATE media SET filename = #{filename}, size = #{size}, status = #{status}, update_time = NOW() " +
@@ -47,6 +47,17 @@ public interface MediaMapper {
                         @Param("duration") float duration);
 
     /**
+     * 补档完成：标 FINISHED 与 ladder_status。
+     * 渐进式下 media_url 已在快路径写入，这里不覆盖；cover_url 可刷新。
+     */
+    @Update("UPDATE media SET status = #{status}, cover_url = #{coverUrl}, " +
+            "ladder_status = #{ladderStatus}, error_msg = NULL, update_time = NOW() WHERE file_id = #{fileId}")
+    int updateLadderFinished(@Param("fileId") String fileId,
+                             @Param("status") MediaStatus status,
+                             @Param("coverUrl") String coverUrl,
+                             @Param("ladderStatus") Integer ladderStatus);
+
+    /**
      * 转码失败：状态置 FAILED，写 error_msg（调用方负责截断到 512）。
      */
     @Update("UPDATE media SET status = #{status}, error_msg = #{errorMsg}, update_time = NOW() " +
@@ -56,7 +67,7 @@ public interface MediaMapper {
                      @Param("errorMsg") String errorMsg);
 
     @Select("<script>" +
-            "SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, error_msg, create_time, update_time " +
+            "SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg, create_time, update_time " +
             "FROM media " +
             "<where>" +
             "<if test='name != null and name != \"\"'>filename LIKE CONCAT('%', #{name}, '%')</if>" +

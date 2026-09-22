@@ -23,6 +23,7 @@ public class Media {
     private Float duration;
     private Long size;
     private MediaStatus status;
+    private Integer ladderStatus;
     private String errorMsg;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

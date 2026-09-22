@@ -45,8 +45,14 @@ vod:
     min-part-size: ${VOD_UPLOAD_MIN_PART_SIZE:5242880}      # 5 MiB
     max-part-size: ${VOD_UPLOAD_MAX_PART_SIZE:67108864}      # 64 MiB
     default-part-size: ${VOD_UPLOAD_DEFAULT_PART_SIZE:10485760} # 10 MiB
+  # commit 是否投递 FAST（渐进式）看 progressive-enabled；实际转档仍在 Worker。
+  abr:
+    enabled: ${VOD_ABR_ENABLED:true}
+    progressive-enabled: ${VOD_ABR_PROGRESSIVE_ENABLED:false}
+    fast-variant: ${VOD_ABR_FAST_VARIANT:360p}
+    fast-preset: ${VOD_ABR_FAST_PRESET:veryfast}
+    ladder-preset: ${VOD_ABR_LADDER_PRESET:medium}
   # 播放清单以 media.media_url 为准（master.m3u8 或 index.m3u8）。
-  # vod.abr.enabled 只在 Worker 上决定新任务是否转多档，见 vod-worker application.yml。
 
 logging:
   level:

@@ -101,7 +101,7 @@ public class MediaController {
     @PostMapping("/medias")
     public MediaDto commitMedia(@Valid @RequestBody CommitMediaRequest request) {
         // TODO: 接入管理端鉴权，校验当前用户是否有权操作该 fileId
-        return mediaService.commit(request.fileId(), request.filename());
+        return mediaService.commit(request.fileId(), request.filename(), request.progressive());
     }
 
     /**

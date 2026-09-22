@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
@@ -139,7 +140,7 @@ class MediaControllerTest {
 
     @Test
     void commitMediaShouldReturnDto() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class))).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -150,6 +151,20 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.size").value(1024))
                 .andExpect(jsonPath("$.status").value("PROCESSING"))
                 .andExpect(jsonPath("$.statusText").value("处理中"));
+
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null);
+    }
+
+    @Test
+    void commitMediaShouldPassProgressiveFlag() throws Exception {
+        when(mediaService.commit(any(String.class), any(String.class), any())).thenReturn(sampleMediaDto());
+
+        mockMvc.perform(post("/vod/medias")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fileId\":\"f7c2a1b0e9d84f6a\",\"filename\":\"lesson01.mp4\",\"progressive\":true}"))
+                .andExpect(status().isOk());
+
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", true);
     }
 
     @Test

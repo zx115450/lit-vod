@@ -26,8 +26,10 @@ class AbrPropertiesBindingTest {
 
     @Test
     void defaultShouldBeDisabledWithThreeVariants() {
-        AbrProperties defaults = new AbrProperties(false, null);
+        AbrProperties defaults = new AbrProperties(false, false, null, null, null, null);
         assertFalse(defaults.enabled());
+        assertFalse(defaults.progressiveEnabled());
+        assertEquals("360p", defaults.fastVariantConfig().label());
         assertEquals(3, defaults.variants().size());
         assertEquals("720p", defaults.variants().get(2).label());
     }

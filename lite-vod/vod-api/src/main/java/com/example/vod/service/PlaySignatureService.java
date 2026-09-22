@@ -42,7 +42,7 @@ public class PlaySignatureService {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
 
-        if (media.getStatus() != MediaStatus.FINISHED) {
+        if (!media.getStatus().playable()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "media not processed yet, current status: " + media.getStatus());
         }

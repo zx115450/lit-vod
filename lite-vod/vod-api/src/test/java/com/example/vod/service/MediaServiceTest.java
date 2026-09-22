@@ -1,5 +1,6 @@
 package com.example.vod.service;
 
+import com.example.vod.common.config.AbrProperties;
 import com.example.vod.common.messaging.RabbitConfig;
 import com.example.vod.controller.dto.MediaDto;
 import com.example.vod.controller.dto.PageResult;
@@ -40,6 +41,7 @@ class MediaServiceTest {
     private MediaTaskMapper mediaTaskMapper;
     private MinioStorage minioStorage;
     private RabbitTemplate rabbitTemplate;
+    private AbrProperties abrProperties;
     private MediaService mediaService;
 
     @BeforeEach
@@ -48,7 +50,9 @@ class MediaServiceTest {
         mediaTaskMapper = mock(MediaTaskMapper.class);
         minioStorage = mock(MinioStorage.class);
         rabbitTemplate = mock(RabbitTemplate.class);
-        mediaService = new MediaService(mediaMapper, mediaTaskMapper, minioStorage, rabbitTemplate);
+        abrProperties = mock(AbrProperties.class);
+        when(abrProperties.progressiveEnabled()).thenReturn(false);
+        mediaService = new MediaService(mediaMapper, mediaTaskMapper, minioStorage, rabbitTemplate, abrProperties);
     }
 
     @Test
@@ -84,6 +88,100 @@ class MediaServiceTest {
                 eq(RabbitConfig.EXCHANGE_NAME),
                 eq(RabbitConfig.ROUTING_KEY),
                 eq(new ProcedureTaskMessage(fileId, media.getId(), media.getObjectKey(), inserted.getId())));
+    }
+
+    @Test
+    void commitShouldDispatchFastTaskWhenProgressiveEnabled() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        Media media = uploadingMedia(fileId);
+        Media processing = processingMedia(fileId, "lesson01.mp4", 2048L);
+
+        when(abrProperties.progressiveEnabled()).thenReturn(true);
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media).thenReturn(processing);
+        when(minioStorage.head(media.getObjectKey())).thenReturn(true);
+        when(minioStorage.statSize(media.getObjectKey())).thenReturn(2048L);
+        when(mediaTaskMapper.findPendingByMediaId(media.getId())).thenReturn(List.of());
+
+        MediaDto dto = mediaService.commit(fileId, "lesson01.mp4");
+
+        assertEquals(MediaStatus.PROCESSING, dto.status());
+
+        ArgumentCaptor<MediaTask> taskCaptor = ArgumentCaptor.forClass(MediaTask.class);
+        verify(mediaTaskMapper).insert(taskCaptor.capture());
+        MediaTask inserted = taskCaptor.getValue();
+
+        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING);
+        verify(mediaMapper).updateLadderFinished(fileId, MediaStatus.PROCESSING, null,
+                com.example.vod.common.domain.media.LadderStatus.PENDING.code());
+
+        ProcedureTaskMessage expected = new ProcedureTaskMessage(
+                fileId, media.getId(), media.getObjectKey(), inserted.getId(),
+                ProcedureTaskMessage.TaskType.FAST, true);
+        verify(rabbitTemplate).convertAndSend(
+                eq(RabbitConfig.EXCHANGE_NAME),
+                eq(RabbitConfig.ROUTING_KEY),
+                eq(expected));
+    }
+
+    @Test
+    void commitShouldDispatchFastTaskWhenProgressiveOverrideTrue() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        Media media = uploadingMedia(fileId);
+        Media processing = processingMedia(fileId, "lesson01.mp4", 2048L);
+
+        when(abrProperties.progressiveEnabled()).thenReturn(false);
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media).thenReturn(processing);
+        when(minioStorage.head(media.getObjectKey())).thenReturn(true);
+        when(minioStorage.statSize(media.getObjectKey())).thenReturn(2048L);
+        when(mediaTaskMapper.findPendingByMediaId(media.getId())).thenReturn(List.of());
+
+        MediaDto dto = mediaService.commit(fileId, "lesson01.mp4", true);
+
+        assertEquals(MediaStatus.PROCESSING, dto.status());
+
+        ArgumentCaptor<MediaTask> taskCaptor = ArgumentCaptor.forClass(MediaTask.class);
+        verify(mediaTaskMapper).insert(taskCaptor.capture());
+        MediaTask inserted = taskCaptor.getValue();
+
+        verify(mediaMapper).updateLadderFinished(fileId, MediaStatus.PROCESSING, null,
+                com.example.vod.common.domain.media.LadderStatus.PENDING.code());
+
+        ProcedureTaskMessage expected = new ProcedureTaskMessage(
+                fileId, media.getId(), media.getObjectKey(), inserted.getId(),
+                ProcedureTaskMessage.TaskType.FAST, true);
+        verify(rabbitTemplate).convertAndSend(
+                eq(RabbitConfig.EXCHANGE_NAME),
+                eq(RabbitConfig.ROUTING_KEY),
+                eq(expected));
+    }
+
+    @Test
+    void commitShouldDispatchFullTaskWhenProgressiveOverrideFalse() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        Media media = uploadingMedia(fileId);
+        Media processing = processingMedia(fileId, "lesson01.mp4", 2048L);
+
+        when(abrProperties.progressiveEnabled()).thenReturn(true);
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media).thenReturn(processing);
+        when(minioStorage.head(media.getObjectKey())).thenReturn(true);
+        when(minioStorage.statSize(media.getObjectKey())).thenReturn(2048L);
+        when(mediaTaskMapper.findPendingByMediaId(media.getId())).thenReturn(List.of());
+
+        mediaService.commit(fileId, "lesson01.mp4", false);
+
+        ArgumentCaptor<MediaTask> taskCaptor = ArgumentCaptor.forClass(MediaTask.class);
+        verify(mediaTaskMapper).insert(taskCaptor.capture());
+        MediaTask inserted = taskCaptor.getValue();
+
+        verify(mediaMapper, never()).updateLadderFinished(anyString(), any(), any(), anyInt());
+
+        ProcedureTaskMessage expected = new ProcedureTaskMessage(
+                fileId, media.getId(), media.getObjectKey(), inserted.getId(),
+                ProcedureTaskMessage.TaskType.FULL, false);
+        verify(rabbitTemplate).convertAndSend(
+                eq(RabbitConfig.EXCHANGE_NAME),
+                eq(RabbitConfig.ROUTING_KEY),
+                eq(expected));
     }
 
     @Test

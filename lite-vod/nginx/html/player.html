@@ -138,13 +138,13 @@
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">整文件：申请凭证 → PUT MinIO → commit。分片：申请 multipart 凭证 → 按片 PUT → 合并 → commit。播放须媒资状态为「已完成」。多码率由 Worker 的 VOD_ABR_ENABLED 决定；播放签发按 media_url 自动选 master / index。</p>
+    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。播放签发按 media_url 自动选 master / index。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
       <input id="fileInput" type="file" accept="video/mp4,video/*,.mp4" />
-      <button id="uploadBtn" type="button">上传并提交</button>
-      <button id="multipartBtn" type="button" class="secondary">分片上传</button>
+      <button id="uploadFullBtn" type="button">一次出齐上传</button>
+      <button id="uploadProgBtn" type="button" class="secondary">渐进式上传</button>
     </div>
     <div id="uploadBarWrap" class="bar-wrap"><div id="uploadBar" class="bar"></div></div>
     <p id="uploadMsg" class="msg info"></p>
@@ -169,12 +169,9 @@
       let hls;
       let pollTimer;
 
-      const PART_SIZE = 10 * 1024 * 1024;
-      const PART_CONCURRENCY = 3;
-
       const fileInput = document.getElementById('fileInput');
-      const uploadBtn = document.getElementById('uploadBtn');
-      const multipartBtn = document.getElementById('multipartBtn');
+      const uploadFullBtn = document.getElementById('uploadFullBtn');
+      const uploadProgBtn = document.getElementById('uploadProgBtn');
       const uploadMsg = document.getElementById('uploadMsg');
       const uploadBarWrap = document.getElementById('uploadBarWrap');
       const uploadBar = document.getElementById('uploadBar');
@@ -302,8 +299,8 @@
       }
 
       function setUploading(on) {
-        uploadBtn.disabled = on;
-        multipartBtn.disabled = on;
+        uploadFullBtn.disabled = on;
+        uploadProgBtn.disabled = on;
       }
 
       async function fetchMedia(fileId) {
@@ -319,20 +316,28 @@
         }
       }
 
-      function startPoll(fileId) {
+      function startPoll(fileId, progressive) {
         stopPoll();
         pollTimer = setInterval(async function () {
           try {
             const m = await fetchMedia(fileId);
             const label = m.statusText || m.status || '';
-            setUploadMsg('转码中… fileId=' + fileId + '  状态=' + label, 'info');
-            if (m.status === 'FINISHED' || m.status === 3) {
+            const st = m.status;
+            if (st === 'PLAYABLE' || st === 3) {
+              setUploadMsg('已可播（低清就绪），可点「申请播放」；高清补档中… fileId=' + fileId, 'ok');
+              return;
+            }
+            if (st === 'FINISHED' || st === 4) {
               stopPoll();
-              setUploadMsg('转码完成，可点击「申请播放」。fileId=' + fileId, 'ok');
-            } else if (m.status === 'FAILED' || String(m.status).indexOf('FAIL') >= 0) {
+              setUploadMsg((progressive ? '档位齐全，' : '转码完成，') + '可点击「申请播放」。fileId=' + fileId, 'ok');
+              return;
+            }
+            if (st === 'FAILED' || String(st).indexOf('FAIL') >= 0) {
               stopPoll();
               setUploadMsg('转码失败: ' + (m.errorMsg || label), 'err');
+              return;
             }
+            setUploadMsg('转码中… fileId=' + fileId + '  状态=' + label, 'info');
           } catch (e) {
             /* 轮询偶发失败忽略，下次再试 */
           }
@@ -360,29 +365,33 @@
         stopPoll();
       }
 
-      async function commitAndWatch(fileId, filename) {
-        setUploadMsg('确认上传（commit）…', 'info');
+      async function commitAndWatch(fileId, filename, progressive) {
+        setUploadMsg('确认上传（commit，progressive=' + progressive + '）…', 'info');
         const media = await readJson(await fetch(API_BASE + '/medias', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json'
           },
-          body: JSON.stringify({ fileId: fileId, filename: filename })
+          body: JSON.stringify({ fileId: fileId, filename: filename, progressive: progressive })
         }));
         const label = media.statusText || media.status || '';
-        setUploadMsg('已提交。fileId=' + fileId + '  状态=' + label + '（转码完成后即可播放）', 'ok');
-        if (media.status !== 'FINISHED' && media.status !== 3) {
-          startPoll(fileId);
+        const tip = progressive
+          ? '已提交渐进式任务。低清就绪后即可播放，高清后台补档。'
+          : '已提交一次出齐任务。全部档转完后即可播放。';
+        setUploadMsg(tip + ' fileId=' + fileId + '  状态=' + label, 'ok');
+        if (media.status !== 'FINISHED' && media.status !== 4) {
+          startPoll(fileId, progressive);
         }
       }
 
-      uploadBtn.addEventListener('click', async function () {
+      async function uploadWholeFile(progressive) {
         const file = selectedFile();
         if (!file) return;
         beginUpload();
+        fileIdEl.value = '';
         try {
-          setUploadMsg('申请上传凭证…', 'info');
+          setUploadMsg((progressive ? '渐进式' : '一次出齐') + '：申请上传凭证…', 'info');
           const sig = await readJson(await fetch(API_BASE + '/signature/upload', {
             headers: { Accept: 'application/json' }
           }));
@@ -390,117 +399,24 @@
             throw new Error('凭证响应缺少 uploadUrl / fileId');
           }
           fileIdEl.value = sig.fileId;
-
           setUploadMsg('直传 MinIO… fileId=' + sig.fileId, 'info');
           await putWithProgress(sig.uploadUrl, file, function (loaded, total) {
             uploadBar.style.width = Math.round(loaded / total * 100) + '%';
           });
           uploadBar.style.width = '100%';
-          await commitAndWatch(sig.fileId, file.name);
+          await commitAndWatch(sig.fileId, file.name, progressive);
         } catch (e) {
           setUploadMsg(e.message || String(e), 'err');
         } finally {
           setUploading(false);
         }
+      }
+
+      uploadFullBtn.addEventListener('click', function () {
+        uploadWholeFile(false);
       });
-
-      multipartBtn.addEventListener('click', async function () {
-        const file = selectedFile();
-        if (!file) return;
-        beginUpload();
-        let session = null;
-        try {
-          setUploadMsg('申请分片凭证…', 'info');
-          const sig = await readJson(await fetch(API_BASE + '/signature/upload/multipart', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json'
-            },
-            body: JSON.stringify({
-              filename: file.name,
-              contentType: file.type || 'video/mp4',
-              contentLength: file.size,
-              partSize: PART_SIZE
-            })
-          }));
-          if (!sig.fileId || !sig.uploadId || !sig.parts || !sig.parts.length) {
-            throw new Error('分片凭证缺少 fileId / uploadId / parts');
-          }
-          session = sig;
-          fileIdEl.value = sig.fileId;
-
-          const partSize = sig.partSize || PART_SIZE;
-          const ordered = sig.parts.slice().sort(function (a, b) {
-            return a.partNumber - b.partNumber;
-          });
-          const loaded = new Array(ordered.length).fill(0);
-          const etags = new Array(ordered.length);
-          let cursor = 0;
-
-          function paintProgress() {
-            let sum = 0;
-            for (let i = 0; i < loaded.length; i++) sum += loaded[i];
-            const ratio = file.size ? Math.min(1, sum / file.size) : 0;
-            uploadBar.style.width = Math.round(ratio * 100) + '%';
-          }
-
-          async function uploadOne(index) {
-            const part = ordered[index];
-            const start = (part.partNumber - 1) * partSize;
-            const end = Math.min(start + partSize, file.size);
-            const blob = file.slice(start, end);
-            setUploadMsg('分片上传 ' + part.partNumber + '/' + ordered.length + '  fileId=' + sig.fileId, 'info');
-            const etag = await putWithProgress(part.uploadUrl, blob, function (n) {
-              loaded[index] = n;
-              paintProgress();
-            });
-            if (!etag) {
-              throw new Error('第 ' + part.partNumber + ' 片响应缺少 ETag（请确认 MinIO CORS 暴露 ETag）');
-            }
-            loaded[index] = blob.size;
-            paintProgress();
-            etags[index] = { partNumber: part.partNumber, etag: etag };
-          }
-
-          async function worker() {
-            while (cursor < ordered.length) {
-              const index = cursor++;
-              await uploadOne(index);
-            }
-          }
-
-          const workers = [];
-          const n = Math.min(PART_CONCURRENCY, ordered.length);
-          for (let i = 0; i < n; i++) workers.push(worker());
-          await Promise.all(workers);
-
-          setUploadMsg('合并分片…', 'info');
-          await readJson(await fetch(API_BASE + '/uploads/' + encodeURIComponent(sig.fileId) + '/complete', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Accept: 'application/json'
-            },
-            body: JSON.stringify({ uploadId: sig.uploadId, parts: etags })
-          }));
-          session = null;
-          uploadBar.style.width = '100%';
-          await commitAndWatch(sig.fileId, file.name);
-        } catch (e) {
-          if (session) {
-            try {
-              await fetch(API_BASE + '/uploads/' + encodeURIComponent(session.fileId) + '/abort', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-                body: JSON.stringify({ uploadId: session.uploadId })
-              });
-            } catch (_) { /* 中止失败不影响原错误展示 */ }
-          }
-          setUploadMsg(e.message || String(e), 'err');
-        } finally {
-          setUploading(false);
-        }
+      uploadProgBtn.addEventListener('click', function () {
+        uploadWholeFile(true);
       });
 
       function destroyHls() {

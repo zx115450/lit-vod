@@ -40,10 +40,15 @@ worker:
   max-duration-sec: ${WORKER_MAX_DURATION_SEC:21600}
   concurrency: ${WORKER_CONCURRENCY:1}
 
-# 多码率 ABR：开启后 Worker 用 FFmpeg filter_complex 一次解码多路编码，出 master.m3u8
+# ABR + Webhook 共用顶层 vod:（YAML 不允许重复 key，否则 Worker 启动直接失败）
 vod:
   abr:
     enabled: ${VOD_ABR_ENABLED:true}
+    # 渐进式多档：先出 fast-variant 档并标可播，再异步补齐其余档
+    progressive-enabled: ${VOD_ABR_PROGRESSIVE_ENABLED:false}
+    fast-variant: ${VOD_ABR_FAST_VARIANT:360p}
+    fast-preset: ${VOD_ABR_FAST_PRESET:veryfast}
+    ladder-preset: ${VOD_ABR_LADDER_PRESET:medium}
     # 档位示例（可覆盖）：
     # variants:
     #   - label: 360p
@@ -51,9 +56,7 @@ vod:
     #     video-bitrate: 600000
     #     audio-bitrate: 96000
     #     bandwidth: 800000
-
-# 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
-vod:
+  # 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
   callback:
     url: ${VOD_CALLBACK_URL:}
     connect-timeout-ms: ${VOD_CALLBACK_CONNECT_TIMEOUT_MS:2000}
