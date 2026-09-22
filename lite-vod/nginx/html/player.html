@@ -133,12 +133,21 @@
     .abr-levels button.active {
       background: var(--accent);
     }
+    #qualitySelect {
+      flex: 0 1 220px;
+      padding: 0.4rem 0.6rem;
+      border: 1px solid #2c3a4f;
+      border-radius: 6px;
+      background: #121a26;
+      color: var(--text);
+      font-size: 0.85rem;
+    }
   </style>
 </head>
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。播放签发按 media_url 自动选 master / index。</p>
+    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。ABR 时签发 master，下方可手动选清晰度或保持 Auto。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
@@ -159,6 +168,12 @@
     <p id="url"></p>
     <div id="abrPanel" class="abr-panel">
       <p id="abrMeta" class="abr-meta"></p>
+      <div class="row" style="margin-bottom:0.35rem">
+        <label for="qualitySelect" style="color:var(--muted);font-size:0.8rem;white-space:nowrap">清晰度</label>
+        <select id="qualitySelect" aria-label="清晰度">
+          <option value="auto">Auto（自适应）</option>
+        </select>
+      </div>
       <div id="abrLevels" class="abr-levels"></div>
     </div>
     <video id="video" controls playsinline></video>
@@ -183,7 +198,12 @@
       const abrPanel = document.getElementById('abrPanel');
       const abrMeta = document.getElementById('abrMeta');
       const abrLevels = document.getElementById('abrLevels');
+      const qualitySelect = document.getElementById('qualitySelect');
       const video = document.getElementById('video');
+
+      /** @type {{ mode: 'hls'|'native', masterUrl: string, variants: Array<{label:string,url:string,bandwidth?:number,height?:number}> } | null} */
+      let qualityState = null;
+      let levelSwitchedHandler = null;
 
       function setUploadMsg(text, kind) {
         uploadMsg.textContent = text || '';
@@ -194,74 +214,215 @@
         abrPanel.classList.remove('on');
         abrMeta.textContent = '';
         abrLevels.innerHTML = '';
+        qualitySelect.innerHTML = '<option value="auto">Auto（自适应）</option>';
+        qualitySelect.disabled = true;
+        qualityState = null;
       }
 
-      function formatLevel(level, index) {
-        if (!level) return '档' + index;
-        const h = level.height || 0;
-        const bw = level.bitrate ? Math.round(level.bitrate / 1000) + 'kbps' : '';
+      function formatVariantLabel(v, index) {
+        if (!v) return '档' + index;
+        const h = v.height || 0;
+        const bw = v.bandwidth || v.bitrate
+          ? Math.round((v.bandwidth || v.bitrate) / 1000) + 'kbps'
+          : '';
         if (h) return h + 'p' + (bw ? ' · ' + bw : '');
+        if (v.label) return v.label + (bw ? ' · ' + bw : '');
         return 'L' + index + (bw ? ' · ' + bw : '');
       }
 
-      function markActiveAbrButton(current) {
-        const buttons = abrLevels.querySelectorAll('button');
-        buttons.forEach(function (btn) {
-          const v = btn.getAttribute('data-level');
-          const active = (current === -1 && v === 'auto') || String(current) === v;
-          btn.classList.toggle('active', active);
+      function markActiveQuality(selected) {
+        const value = selected === -1 || selected === 'auto' ? 'auto' : String(selected);
+        qualitySelect.value = value;
+        abrLevels.querySelectorAll('button').forEach(function (btn) {
+          btn.classList.toggle('active', btn.getAttribute('data-level') === value);
         });
       }
 
-      function renderAbrControls() {
-        hideAbrPanel();
-        if (!hls || !hls.levels || hls.levels.length === 0) {
+      function applyQuality(selected) {
+        if (!qualityState) return;
+        if (qualityState.mode === 'hls') {
+          if (!hls) return;
+          if (selected === 'auto' || selected === -1) {
+            hls.currentLevel = -1;
+            markActiveQuality('auto');
+            abrMeta.textContent = '已选 Auto：播放器按带宽自动升降档';
+            return;
+          }
+          const index = Number(selected);
+          hls.currentLevel = index;
+          markActiveQuality(index);
+          abrMeta.textContent = '已锁定：' + formatVariantLabel(hls.levels[index], index);
           return;
         }
-        const levels = hls.levels;
-        const isAbr = levels.length > 1;
+        // native HLS：Auto 播 master；手动切档则直接播对应子清单
+        const t = video.currentTime || 0;
+        const wasPaused = video.paused;
+        let nextUrl = qualityState.masterUrl;
+        let meta = '已选 Auto：原生 HLS 由系统自适应';
+        if (selected !== 'auto' && selected !== -1) {
+          const index = Number(selected);
+          const v = qualityState.variants[index];
+          if (!v) return;
+          nextUrl = v.url;
+          meta = '已锁定：' + formatVariantLabel(v, index) + '（原生切档会短暂重缓冲）';
+        }
+        video.src = nextUrl;
+        const seek = function () {
+          if (t > 0 && isFinite(t)) {
+            try { video.currentTime = t; } catch (_) { /* ignore */ }
+          }
+          if (!wasPaused) video.play().catch(function () {});
+          video.removeEventListener('loadedmetadata', seek);
+        };
+        video.addEventListener('loadedmetadata', seek);
+        video.load();
+        markActiveQuality(selected === -1 ? 'auto' : selected);
+        abrMeta.textContent = meta;
+      }
+
+      function buildQualityUi(variants, metaText, multi) {
         abrPanel.classList.add('on');
-        abrMeta.textContent = isAbr
-          ? ('ABR 多码率：共 ' + levels.length + ' 档（可点选或保持 Auto 自适应）')
-          : '单档播放（非 ABR / 仅一档清单）';
+        abrMeta.textContent = metaText;
+        abrLevels.innerHTML = '';
+        qualitySelect.innerHTML = '';
+        qualitySelect.disabled = !multi;
+
+        const autoOpt = document.createElement('option');
+        autoOpt.value = 'auto';
+        autoOpt.textContent = multi ? 'Auto（自适应）' : '仅一档';
+        qualitySelect.appendChild(autoOpt);
 
         const autoBtn = document.createElement('button');
         autoBtn.type = 'button';
         autoBtn.textContent = 'Auto';
         autoBtn.setAttribute('data-level', 'auto');
-        autoBtn.disabled = !isAbr;
-        autoBtn.addEventListener('click', function () {
-          if (!hls) return;
-          hls.currentLevel = -1;
-          markActiveAbrButton(-1);
-          abrMeta.textContent = 'ABR：Auto（播放器按带宽自动升降档）';
-        });
+        autoBtn.disabled = !multi;
+        autoBtn.addEventListener('click', function () { applyQuality('auto'); });
         abrLevels.appendChild(autoBtn);
 
-        levels.forEach(function (level, index) {
+        variants.forEach(function (v, index) {
+          const label = formatVariantLabel(v, index);
+          const opt = document.createElement('option');
+          opt.value = String(index);
+          opt.textContent = label;
+          qualitySelect.appendChild(opt);
+
           const btn = document.createElement('button');
           btn.type = 'button';
-          btn.textContent = formatLevel(level, index);
+          btn.textContent = label;
           btn.setAttribute('data-level', String(index));
-          btn.addEventListener('click', function () {
-            if (!hls) return;
-            hls.currentLevel = index;
-            markActiveAbrButton(index);
-            abrMeta.textContent = '已锁定：' + formatLevel(level, index);
-          });
+          btn.disabled = !multi;
+          btn.addEventListener('click', function () { applyQuality(index); });
           abrLevels.appendChild(btn);
         });
 
-        markActiveAbrButton(hls.currentLevel);
-        hls.on(Hls.Events.LEVEL_SWITCHED, function (_e, data) {
-          if (hls.autoLevelEnabled) {
-            abrMeta.textContent = 'ABR Auto → 当前 ' + formatLevel(hls.levels[data.level], data.level);
-            markActiveAbrButton(-1);
-          } else {
-            markActiveAbrButton(data.level);
-          }
-        });
+        markActiveQuality('auto');
       }
+
+      function renderHlsQualityControls() {
+        if (!hls || !hls.levels || hls.levels.length === 0) {
+          hideAbrPanel();
+          return;
+        }
+        const levels = hls.levels;
+        const multi = levels.length > 1;
+        const variants = levels.map(function (level, index) {
+          return {
+            label: level.height ? (level.height + 'p') : ('L' + index),
+            height: level.height || 0,
+            bitrate: level.bitrate || 0,
+            url: (level.url && level.url[0]) || ''
+          };
+        });
+        qualityState = { mode: 'hls', masterUrl: '', variants: variants };
+        buildQualityUi(
+          variants,
+          multi
+            ? ('ABR 多码率：共 ' + levels.length + ' 档，可手动锁定或保持 Auto')
+            : '单档播放（非 ABR / 仅一档清单）',
+          multi
+        );
+
+        if (levelSwitchedHandler) {
+          hls.off(Hls.Events.LEVEL_SWITCHED, levelSwitchedHandler);
+        }
+        levelSwitchedHandler = function (_e, data) {
+          if (!hls) return;
+          if (hls.autoLevelEnabled) {
+            abrMeta.textContent = 'ABR Auto → 当前 ' + formatVariantLabel(hls.levels[data.level], data.level);
+            markActiveQuality('auto');
+          } else {
+            markActiveQuality(data.level);
+          }
+        };
+        hls.on(Hls.Events.LEVEL_SWITCHED, levelSwitchedHandler);
+      }
+
+      /**
+       * 解析 master.m3u8，抽出各档相对/绝对 URI（网关已改写签名 query）。
+       */
+      function parseMasterVariants(text, masterUrl) {
+        const lines = text.split(/\r?\n/);
+        const variants = [];
+        let pending = null;
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          if (line.indexOf('#EXT-X-STREAM-INF:') === 0) {
+            const bw = /BANDWIDTH=(\d+)/i.exec(line);
+            const res = /RESOLUTION=(\d+)x(\d+)/i.exec(line);
+            pending = {
+              bandwidth: bw ? Number(bw[1]) : 0,
+              height: res ? Number(res[2]) : 0,
+              label: res ? (res[2] + 'p') : ''
+            };
+            continue;
+          }
+          if (line.charAt(0) === '#') continue;
+          if (pending) {
+            try {
+              pending.url = new URL(line, masterUrl).href;
+            } catch (_) {
+              pending.url = line;
+            }
+            if (!pending.label) pending.label = 'L' + variants.length;
+            variants.push(pending);
+            pending = null;
+          }
+        }
+        return variants;
+      }
+
+      async function renderNativeQualityControls(masterUrl, isMaster) {
+        abrPanel.classList.add('on');
+        if (!isMaster) {
+          qualityState = { mode: 'native', masterUrl: masterUrl, variants: [] };
+          buildQualityUi([], '原生 HLS：单档清单', false);
+          return;
+        }
+        try {
+          const res = await fetch(masterUrl, { headers: { Accept: 'application/vnd.apple.mpegurl,*/*' } });
+          if (!res.ok) throw new Error('拉取 master 失败 HTTP ' + res.status);
+          const text = await res.text();
+          const variants = parseMasterVariants(text, masterUrl);
+          qualityState = { mode: 'native', masterUrl: masterUrl, variants: variants };
+          const multi = variants.length > 1;
+          buildQualityUi(
+            variants,
+            multi
+              ? ('原生 HLS：共 ' + variants.length + ' 档，可手动锁定（切档会短暂重缓冲）')
+              : '原生 HLS：master 仅一档',
+            multi
+          );
+        } catch (e) {
+          qualityState = { mode: 'native', masterUrl: masterUrl, variants: [] };
+          buildQualityUi([], '原生 HLS：未能解析档位（仍可 Auto 播放）—' + (e.message || e), false);
+        }
+      }
+
+      qualitySelect.addEventListener('change', function () {
+        applyQuality(qualitySelect.value);
+      });
 
       async function readJson(res) {
         const text = await res.text();
@@ -421,6 +582,10 @@
 
       function destroyHls() {
         if (hls) {
+          if (levelSwitchedHandler) {
+            try { hls.off(Hls.Events.LEVEL_SWITCHED, levelSwitchedHandler); } catch (_) { /* ignore */ }
+            levelSwitchedHandler = null;
+          }
           hls.destroy();
           hls = null;
         }
@@ -439,27 +604,19 @@
         return playUrl;
       }
 
-      function attachSource(playUrl) {
+      async function attachSource(playUrl) {
         destroyHls();
         const src = toPlayableUrl(playUrl);
         const isMaster = /\/master\.m3u8(\?|$)/i.test(src);
         urlEl.textContent = (isMaster ? '[ABR master] ' : '[单档 index] ') + 'playUrl: ' + src;
 
-        if (video.canPlayType('application/vnd.apple.mpegurl')) {
-          video.src = src;
-          video.play().catch(function () {});
-          abrPanel.classList.add('on');
-          abrMeta.textContent = isMaster
-            ? 'Safari 原生 HLS：由系统自动 ABR，本页不提供手动切档'
-            : 'Safari 原生 HLS：单档清单';
-          return;
-        }
+        // 优先 hls.js，才能用 currentLevel 做无缝手动选档
         if (window.Hls && Hls.isSupported()) {
-          hls = new Hls({ enableWorker: true });
+          hls = new Hls({ enableWorker: true, startLevel: -1 });
           hls.loadSource(src);
           hls.attachMedia(video);
           hls.on(Hls.Events.MANIFEST_PARSED, function () {
-            renderAbrControls();
+            renderHlsQualityControls();
           });
           hls.on(Hls.Events.ERROR, function (_e, data) {
             if (data.fatal) {
@@ -469,12 +626,21 @@
           video.play().catch(function () {});
           return;
         }
+
+        if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+          video.play().catch(function () {});
+          await renderNativeQualityControls(src, isMaster);
+          return;
+        }
+
         throw new Error('当前浏览器不支持 HLS');
       }
 
       playBtn.addEventListener('click', async function () {
         const fileId = fileIdEl.value.trim();
         errEl.textContent = '';
+        errEl.className = 'msg err';
         urlEl.textContent = '';
         hideAbrPanel();
         if (!fileId) {
@@ -490,7 +656,7 @@
           if (!data || !data.playUrl) {
             throw new Error('响应缺少 playUrl');
           }
-          attachSource(data.playUrl);
+          await attachSource(data.playUrl);
         } catch (e) {
           destroyHls();
           errEl.textContent = e.message || String(e);
