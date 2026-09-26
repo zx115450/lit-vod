@@ -52,7 +52,7 @@ public class FfmpegService {
     /** 截封面，第 3 秒。片长短于 3 秒时改用 0 秒（由调用方判断后传 startTime）。 */
     private static List<String> coverCmd(String startTime) {
         return List.of(
-                "ffmpeg", "-y", "-ss", startTime, "-i", "source.mp4",
+                 "ffmpeg", "-y", "-ss", startTime, "-i", "source.mp4",
                 "-vframes", "1", "-q:v", "2", "cover.jpg");
     }
 

@@ -53,4 +53,14 @@ class PlayPathSupportTest {
         assertEquals("/hls/" + fileId + "/master.m3u8",
                 PlayPathSupport.signedPlaylistPath(fileId, "hls/" + fileId + "/master.m3u8"));
     }
+
+    @Test
+    void previewPlaylistPathAndDetect() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        assertEquals("/hls/" + fileId + "/preview.m3u8", PlayPathSupport.previewPlaylistPath(fileId));
+        assertTrue(PlayPathSupport.isPreviewPlaylist("preview.m3u8"));
+        assertTrue(PlayPathSupport.isPlaylist("preview.m3u8"));
+        assertFalse(PlayPathSupport.isPreviewPlaylist("index.m3u8"));
+        assertFalse(PlayPathSupport.isPreviewPlaylist("master.m3u8"));
+    }
 }

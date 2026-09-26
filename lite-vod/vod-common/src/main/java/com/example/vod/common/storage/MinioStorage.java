@@ -182,6 +182,11 @@ public class MinioStorage {
         }
     }
 
+    /** 对象是否存在（{@link #head} 别名，签发回退等场景语义更清晰）。 */
+    public boolean exists(String objectKey) {
+        return head(objectKey);
+    }
+
     public long statSize(String objectKey) {
         try {
             StatObjectResponse stat = minioClient.statObject(StatObjectArgs.builder()

@@ -39,6 +39,13 @@ worker:
   max-attempts: ${WORKER_MAX_ATTEMPTS:3}
   max-duration-sec: ${WORKER_MAX_DURATION_SEC:21600}
   concurrency: ${WORKER_CONCURRENCY:1}
+  command:
+    # 默认仅允许 ffmpeg / ffprobe；关闭 whitelist-enabled 仅用于本地排障/单测
+    whitelist-enabled: true
+    allowed-binaries:
+      - ffmpeg
+      - ffprobe
+    max-output-chars: 65536
 
 # ABR + Webhook 共用顶层 vod:（YAML 不允许重复 key，否则 Worker 启动直接失败）
 vod:
@@ -56,6 +63,10 @@ vod:
     #     video-bitrate: 600000
     #     audio-bitrate: 96000
     #     bandwidth: 800000
+  # 试看 L2：转码后写 preview.m3u8；关闭则跳过
+  preview:
+    l2-enabled: ${VOD_PREVIEW_L2_ENABLED:false}
+    seconds: ${VOD_PREVIEW_SECONDS:30}
   # 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
   callback:
     url: ${VOD_CALLBACK_URL:}

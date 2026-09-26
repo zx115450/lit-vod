@@ -1,6 +1,7 @@
 package com.example.vod;
 
 import com.example.vod.common.config.AbrProperties;
+import com.example.vod.common.config.PreviewProperties;
 import com.example.vod.config.PlaySignProperties;
 import com.example.vod.config.UploadProperties;
 import org.springframework.boot.SpringApplication;
@@ -17,7 +18,12 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
  * （切片上下文没有 DataSource / SqlSessionFactory，mapper bean 会初始化失败）。
  */
 @SpringBootApplication
-@EnableConfigurationProperties({PlaySignProperties.class, UploadProperties.class, AbrProperties.class})
+@EnableConfigurationProperties({
+        PlaySignProperties.class,
+        UploadProperties.class,
+        AbrProperties.class,
+        PreviewProperties.class
+})
 public class VodApiApplication {
     public static void main(String[] args) {
         SpringApplication.run(VodApiApplication.class, args);

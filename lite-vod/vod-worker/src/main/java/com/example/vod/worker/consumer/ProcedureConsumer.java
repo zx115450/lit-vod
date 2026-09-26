@@ -1,6 +1,7 @@
 package com.example.vod.worker.consumer;
 
 import com.example.vod.common.config.AbrProperties;
+import com.example.vod.common.config.PreviewProperties;
 import com.example.vod.worker.callback.CallbackNotifier;
 import com.example.vod.worker.callback.CallbackPayload;
 import com.example.vod.worker.config.WorkerProperties;
@@ -12,6 +13,7 @@ import com.example.vod.common.domain.media.MediaTaskMapper;
 import com.example.vod.common.domain.media.MediaTaskStatus;
 import com.example.vod.common.domain.media.MediaTaskType;
 import com.example.vod.worker.ffmpeg.FfmpegService;
+import com.example.vod.worker.ffmpeg.PreviewPlaylistBuilder;
 import com.example.vod.worker.ffmpeg.TranscodeException;
 import com.example.vod.common.messaging.ProcedureTaskMessage;
 import com.example.vod.worker.process.CommandTimeoutException;
@@ -27,6 +29,7 @@ import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -59,6 +62,7 @@ public class ProcedureConsumer {
     private final FfmpegService ffmpegService;
     private final WorkerProperties props;
     private final AbrProperties abrProperties;
+    private final PreviewProperties previewProperties;
     private final CallbackNotifier callbackNotifier;
     private final RabbitTemplate rabbitTemplate;
 
@@ -68,6 +72,7 @@ public class ProcedureConsumer {
                              FfmpegService ffmpegService,
                              WorkerProperties props,
                              AbrProperties abrProperties,
+                             PreviewProperties previewProperties,
                              CallbackNotifier callbackNotifier,
                              RabbitTemplate rabbitTemplate) {
         this.mediaMapper = mediaMapper;
@@ -76,6 +81,7 @@ public class ProcedureConsumer {
         this.ffmpegService = ffmpegService;
         this.props = props;
         this.abrProperties = abrProperties;
+        this.previewProperties = previewProperties;
         this.callbackNotifier = callbackNotifier;
         this.rabbitTemplate = rabbitTemplate;
     }
@@ -102,7 +108,7 @@ public class ProcedureConsumer {
             attempt = (task.getAttempt() == null ? 0 : task.getAttempt()) + 1;
             mediaTaskMapper.updateRunning(taskId, MediaTaskStatus.RUNNING, attempt);
             log.info("task running taskId={} attempt={} taskType={}", taskId, attempt, message.taskType());
-
+            //创建工作目录 - workdir
             Files.createDirectories(workDir);
             minioStorage.download(message.objectKey(), workDir.resolve("source.mp4"));
 
@@ -249,6 +255,7 @@ public class ProcedureConsumer {
         }
         uploadSegments(workDir, fileId, "");
         minioStorage.uploadFile(ObjectKeys.hlsPlaylist(fileId), playlist, "application/vnd.apple.mpegurl");
+        uploadPreviewIfEnabled(fileId, playlist, null);
     }
 
     private void uploadFastOutputs(String fileId, Path workDir) throws IOException {
@@ -276,6 +283,7 @@ public class ProcedureConsumer {
         minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
 
         minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
+        uploadPreviewIfEnabled(fileId, variantPlaylist, fast.label());
     }
 
     private void uploadLadderOutputs(String fileId, Path workDir) throws IOException {
@@ -318,6 +326,35 @@ public class ProcedureConsumer {
         }
 
         minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
+
+        AbrProperties.Variant fast = abrProperties.fastVariantConfig();
+        Path fastPlaylist = workDir.resolve(fast.label()).resolve("index.m3u8");
+        uploadPreviewIfEnabled(fileId, fastPlaylist, fast.label());
+    }
+
+    /**
+     * 试看 L2：从正片 media playlist 截前 N 秒写 preview.m3u8 并上传（复用正片 ts）。
+     *
+     * @param uriPrefix ABR 档位目录名（如 360p）；单档传 null
+     */
+    private void uploadPreviewIfEnabled(String fileId, Path sourcePlaylist, String uriPrefix) throws IOException {
+        if (!previewProperties.l2Enabled()) {
+            return;
+        }
+        if (!Files.isRegularFile(sourcePlaylist)) {
+            throw new IllegalStateException("missing source playlist for preview: " + sourcePlaylist);
+        }
+        String source = Files.readString(sourcePlaylist, StandardCharsets.UTF_8);
+        String preview = PreviewPlaylistBuilder.build(source, previewProperties.seconds(), uriPrefix);
+        Path previewFile = sourcePlaylist.getParent().resolve("preview.m3u8");
+        // 单档时 parent 即 workDir；ABR 时写在档位目录旁无妨，最终只上传文本
+        if (uriPrefix != null && !uriPrefix.isBlank()) {
+            previewFile = sourcePlaylist.getParent().getParent().resolve("preview.m3u8");
+        }
+        Files.writeString(previewFile, preview, StandardCharsets.UTF_8);
+        minioStorage.uploadFile(ObjectKeys.hlsPreview(fileId), previewFile, "application/vnd.apple.mpegurl");
+        log.info("uploaded preview.m3u8 fileId={} seconds={} prefix={}",
+                fileId, previewProperties.seconds(), uriPrefix == null ? "" : uriPrefix);
     }
 
     private void uploadSegments(Path dir, String fileId, String label) throws IOException {

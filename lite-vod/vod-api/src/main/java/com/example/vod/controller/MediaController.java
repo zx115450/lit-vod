@@ -59,7 +59,9 @@ public class MediaController {
      * 返回 fileId + uploadId + 各片预签名 URL（一次发齐）。
      */
     @PostMapping("/signature/upload/multipart")
-    public MultipartUploadSignatureResponse multipartUploadSignature(@Valid @RequestBody MultipartUploadRequest request) {
+    public MultipartUploadSignatureResponse multipartUploadSignature(
+            @Valid @RequestBody MultipartUploadRequest request
+    ) {
         // TODO: 接入管理端鉴权
         return uploadSignatureService.createMultipart(request);
     }
@@ -91,7 +93,8 @@ public class MediaController {
     @GetMapping("/signature/play")
     public PlaySignatureResponse playSignature(
             @RequestParam String fileId,
-            @RequestParam(required = false, defaultValue = "0") int exper) {
+            @RequestParam(required = false, defaultValue = "0") int exper
+    ) {
         return playSignatureService.sign(fileId, exper);
     }
 

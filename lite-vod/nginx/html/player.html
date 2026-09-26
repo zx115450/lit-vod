@@ -142,12 +142,35 @@
       color: var(--text);
       font-size: 0.85rem;
     }
+    input[type="number"] {
+      flex: 0 0 110px;
+      width: 110px;
+      padding: 0.6rem 0.75rem;
+      border: 1px solid #2c3a4f;
+      border-radius: 6px;
+      background: var(--panel);
+      color: var(--text);
+      outline: none;
+    }
+    input[type="number"]:focus { border-color: var(--accent); }
+    .preview-badge {
+      display: none;
+      margin: 0 0 0.75rem;
+      padding: 0.45rem 0.7rem;
+      border-radius: 6px;
+      background: rgba(61, 139, 253, 0.15);
+      border: 1px solid rgba(61, 139, 253, 0.45);
+      color: var(--accent);
+      font-size: 0.8rem;
+    }
+    .preview-badge.on { display: block; }
+    button.preview { background: #5b8def; }
   </style>
 </head>
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。ABR 时签发 master，下方可手动选清晰度或保持 Auto。</p>
+    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。ABR 时签发 master，下方可手动选清晰度或保持 Auto。试看：传 exper&gt;0，L2 开启时 playUrl 指向 preview.m3u8（仅前 N 秒）。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
@@ -158,14 +181,20 @@
     <div id="uploadBarWrap" class="bar-wrap"><div id="uploadBar" class="bar"></div></div>
     <p id="uploadMsg" class="msg info"></p>
 
-    <h2>2. 播放</h2>
+    <h2>2. 播放 / 试看</h2>
     <div class="row">
       <input id="fileId" type="text" placeholder="fileId（上传后自动填入）" autocomplete="off" />
       <button id="playBtn" type="button">申请播放</button>
       <button id="refreshBtn" type="button" class="secondary">查状态</button>
     </div>
+    <div class="row">
+      <label for="experInput" style="color:var(--muted);font-size:0.8rem;white-space:nowrap">试看秒数</label>
+      <input id="experInput" type="number" min="1" step="1" value="30" title="exper：试看秒数，默认 30" />
+      <button id="previewBtn" type="button" class="preview">试看</button>
+    </div>
     <p id="err" class="msg err"></p>
     <p id="url"></p>
+    <div id="previewBadge" class="preview-badge"></div>
     <div id="abrPanel" class="abr-panel">
       <p id="abrMeta" class="abr-meta"></p>
       <div class="row" style="margin-bottom:0.35rem">
@@ -192,9 +221,12 @@
       const uploadBar = document.getElementById('uploadBar');
       const fileIdEl = document.getElementById('fileId');
       const playBtn = document.getElementById('playBtn');
+      const previewBtn = document.getElementById('previewBtn');
+      const experInput = document.getElementById('experInput');
       const refreshBtn = document.getElementById('refreshBtn');
       const errEl = document.getElementById('err');
       const urlEl = document.getElementById('url');
+      const previewBadge = document.getElementById('previewBadge');
       const abrPanel = document.getElementById('abrPanel');
       const abrMeta = document.getElementById('abrMeta');
       const abrLevels = document.getElementById('abrLevels');
@@ -210,6 +242,16 @@
         uploadMsg.className = 'msg ' + (kind || 'info');
       }
 
+      function hidePreviewBadge() {
+        previewBadge.classList.remove('on');
+        previewBadge.textContent = '';
+      }
+
+      function showPreviewBadge(exper) {
+        previewBadge.classList.add('on');
+        previewBadge.textContent = '试看模式：仅前 ' + exper + ' 秒（L2 开启时清单为 preview.m3u8）';
+      }
+
       function hideAbrPanel() {
         abrPanel.classList.remove('on');
         abrMeta.textContent = '';
@@ -217,6 +259,19 @@
         qualitySelect.innerHTML = '<option value="auto">Auto（自适应）</option>';
         qualitySelect.disabled = true;
         qualityState = null;
+      }
+
+      function parseExper() {
+        const n = Number(experInput.value);
+        if (!Number.isFinite(n) || n <= 0) {
+          throw new Error('试看秒数须为正整数');
+        }
+        return Math.floor(n);
+      }
+
+      function setPlayBusy(on) {
+        playBtn.disabled = on;
+        previewBtn.disabled = on;
       }
 
       function formatVariantLabel(v, index) {
@@ -590,6 +645,7 @@
           hls = null;
         }
         hideAbrPanel();
+        hidePreviewBadge();
         video.removeAttribute('src');
         video.load();
       }
@@ -604,11 +660,24 @@
         return playUrl;
       }
 
-      async function attachSource(playUrl) {
+      function playlistKindLabel(src) {
+        if (/\/preview\.m3u8(\?|$)/i.test(src)) return '[试看 preview] ';
+        if (/\/master\.m3u8(\?|$)/i.test(src)) return '[ABR master] ';
+        return '[单档 index] ';
+      }
+
+      async function attachSource(playUrl, exper) {
         destroyHls();
         const src = toPlayableUrl(playUrl);
         const isMaster = /\/master\.m3u8(\?|$)/i.test(src);
-        urlEl.textContent = (isMaster ? '[ABR master] ' : '[单档 index] ') + 'playUrl: ' + src;
+        const isPreview = /\/preview\.m3u8(\?|$)/i.test(src);
+        urlEl.textContent = playlistKindLabel(src) + 'playUrl: ' + src;
+        if (exper > 0) {
+          showPreviewBadge(exper);
+          if (!isPreview) {
+            previewBadge.textContent += '；当前 path 非 preview（L2 未开或无 preview 产物，按 L0/L1 exper 签发）';
+          }
+        }
 
         // 优先 hls.js，才能用 currentLevel 做无缝手动选档
         if (window.Hls && Hls.isSupported()) {
@@ -637,31 +706,46 @@
         throw new Error('当前浏览器不支持 HLS');
       }
 
-      playBtn.addEventListener('click', async function () {
+      async function requestPlay(exper) {
         const fileId = fileIdEl.value.trim();
         errEl.textContent = '';
         errEl.className = 'msg err';
         urlEl.textContent = '';
         hideAbrPanel();
+        hidePreviewBadge();
         if (!fileId) {
           errEl.textContent = '请输入 fileId';
           return;
         }
-        playBtn.disabled = true;
+        setPlayBusy(true);
         try {
-          const data = await readJson(await fetch(
-            API_BASE + '/signature/play?fileId=' + encodeURIComponent(fileId),
-            { headers: { Accept: 'application/json' } }
-          ));
+          let url = API_BASE + '/signature/play?fileId=' + encodeURIComponent(fileId);
+          if (exper > 0) {
+            url += '&exper=' + encodeURIComponent(String(exper));
+          }
+          const data = await readJson(await fetch(url, { headers: { Accept: 'application/json' } }));
           if (!data || !data.playUrl) {
             throw new Error('响应缺少 playUrl');
           }
-          await attachSource(data.playUrl);
+          await attachSource(data.playUrl, exper);
         } catch (e) {
           destroyHls();
           errEl.textContent = e.message || String(e);
         } finally {
-          playBtn.disabled = false;
+          setPlayBusy(false);
+        }
+      }
+
+      playBtn.addEventListener('click', function () {
+        requestPlay(0);
+      });
+
+      previewBtn.addEventListener('click', function () {
+        try {
+          requestPlay(parseExper());
+        } catch (e) {
+          errEl.className = 'msg err';
+          errEl.textContent = e.message || String(e);
         }
       });
 
@@ -689,6 +773,10 @@
 
       fileIdEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') playBtn.click();
+      });
+
+      experInput.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') previewBtn.click();
       });
     })();
   </script>

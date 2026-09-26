@@ -65,6 +65,9 @@ class MediaControllerTest {
     @MockBean
     private com.example.vod.common.domain.media.MediaMapper mediaMapper;
 
+    @MockBean
+    private com.example.vod.common.config.PreviewProperties previewProperties;
+
     @Test
     void uploadSignatureShouldReturnDto() throws Exception {
         when(uploadSignatureService.create()).thenReturn(

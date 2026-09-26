@@ -1,5 +1,6 @@
 package com.example.vod.gateway;
 
+import com.example.vod.common.config.PreviewProperties;
 import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.storage.MinioStorage;
@@ -25,19 +26,24 @@ class PlayGatewayFilterTest {
 
     private static final String FILE_ID = "f7c2a1b0e9d84f6a";
     private static final String SIGNED_PATH = "/hls/" + FILE_ID + "/index.m3u8";
+    private static final String PREVIEW_PATH = "/hls/" + FILE_ID + "/preview.m3u8";
     private static final long EXPIRE = 1710003600L;
 
     private PlaySignService playSignService;
     private MinioStorage minioStorage;
     private MediaMapper mediaMapper;
     private PlayGatewayFilter filter;
+    private PlayGatewayFilter filterL2;
 
     @BeforeEach
     void setUp() {
         playSignService = new PlaySignService(new PlaySignProperties("test-secret", "http://localhost:8080", 3600L));
         minioStorage = mock(MinioStorage.class);
         mediaMapper = mock(MediaMapper.class);
-        filter = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper);
+        filter = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
+                new PreviewProperties(false, 120));
+        filterL2 = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
+                new PreviewProperties(true, 120));
     }
 
     @Test
@@ -53,7 +59,6 @@ class PlayGatewayFilterTest {
     @Test
     void shouldReturn403WhenExpired() throws Exception {
         String sign = playSignService.sign(SIGNED_PATH, EXPIRE, 0);
-        // force "now" by using expire equal - verify uses Instant.now; craft expired e in past
         long past = playSignService.nowEpoch() - 10;
         String pastSign = playSignService.sign(SIGNED_PATH, past, 0);
 
@@ -212,6 +217,109 @@ class PlayGatewayFilterTest {
         filter.doFilter(request, response, new MockFilterChain());
 
         assertEquals(403, response.getStatus());
+    }
+
+    @Test
+    void l2ShouldAllowPreviewPlaylistAndRewrite() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/index.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(PREVIEW_PATH, e, 120);
+        String preview = "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n";
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/preview.m3u8")))
+                .thenReturn(new ByteArrayInputStream(preview.getBytes(StandardCharsets.UTF_8)));
+
+        MockHttpServletRequest request = new MockHttpServletRequest("GET", PREVIEW_PATH);
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "120");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filterL2.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(200, response.getStatus());
+        assertTrue(response.getContentAsString().contains("segment_000.ts?e=" + e + "&exper=120&sign=" + sign));
+    }
+
+    @Test
+    void l2ShouldAllowListedTsWithPreviewSign() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/index.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(PREVIEW_PATH, e, 120);
+        String preview = "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n";
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/preview.m3u8")))
+                .thenReturn(new ByteArrayInputStream(preview.getBytes(StandardCharsets.UTF_8)));
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/segment_000.ts")))
+                .thenReturn(new ByteArrayInputStream(new byte[]{0x47}));
+
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/hls/" + FILE_ID + "/segment_000.ts");
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "120");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filterL2.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(200, response.getStatus());
+    }
+
+    @Test
+    void l2ShouldRejectLaterTsWithPreviewSign() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/index.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(PREVIEW_PATH, e, 120);
+        String preview = "#EXTM3U\n#EXTINF:4.0,\nsegment_000.ts\n#EXT-X-ENDLIST\n";
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/preview.m3u8")))
+                .thenReturn(new ByteArrayInputStream(preview.getBytes(StandardCharsets.UTF_8)));
+
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/hls/" + FILE_ID + "/segment_050.ts");
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "120");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filterL2.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(403, response.getStatus());
+    }
+
+    @Test
+    void l2ShouldRejectMasterWithPreviewSign() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/master.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(PREVIEW_PATH, e, 120);
+
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/hls/" + FILE_ID + "/master.m3u8");
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "120");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filterL2.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(403, response.getStatus());
+    }
+
+    @Test
+    void l2FullSignShouldStillPlayComplete() throws Exception {
+        when(mediaMapper.findByFileId(FILE_ID)).thenReturn(mediaWithUrl("hls/" + FILE_ID + "/index.m3u8"));
+        long e = playSignService.nowEpoch() + 600;
+        String sign = playSignService.sign(SIGNED_PATH, e, 0);
+        when(minioStorage.openStream(eq("hls/" + FILE_ID + "/segment_050.ts")))
+                .thenReturn(new ByteArrayInputStream(new byte[]{0x47}));
+
+        MockHttpServletRequest request =
+                new MockHttpServletRequest("GET", "/hls/" + FILE_ID + "/segment_050.ts");
+        request.setParameter("e", String.valueOf(e));
+        request.setParameter("exper", "0");
+        request.setParameter("sign", sign);
+        MockHttpServletResponse response = new MockHttpServletResponse();
+
+        filterL2.doFilter(request, response, new MockFilterChain());
+
+        assertEquals(200, response.getStatus());
     }
 
     private static Media mediaWithUrl(String mediaUrl) {

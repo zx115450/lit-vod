@@ -371,6 +371,12 @@ ffmpeg -y -i source.mp4 -vf "scale=-2:720" -c:v libx264 -preset medium -crf 23 \
 
 Java 单测可用极短 mp4 调 `CommandRunner`，断言退出码为 0 且存在 `index.m3u8`。CI 若无 ffmpeg，跳过该测试或只在 Worker 镜像里跑。
 
+## 增强方向
+
+现网 `CommandRunner`「先读全流再 waitFor」在进程挂死时可能套不上超时。工程增强（异步读流、有界输出、可执行白名单、单测）见：
+
+- [06-CommandRunner 增强实现](./06-工程化实践记录/06-CommandRunner增强实现.md)
+
 ## 本文不做
 
 - 不解释 CRF、preset、HLS 切片语义（见步骤 09 与前置知识）

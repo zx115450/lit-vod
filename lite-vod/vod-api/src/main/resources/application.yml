@@ -52,6 +52,10 @@ vod:
     fast-variant: ${VOD_ABR_FAST_VARIANT:360p}
     fast-preset: ${VOD_ABR_FAST_PRESET:veryfast}
     ladder-preset: ${VOD_ABR_LADDER_PRESET:medium}
+  # 试看 L2：exper>0 时签发 preview.m3u8；关闭则与首期一致。
+  preview:
+    l2-enabled: ${VOD_PREVIEW_L2_ENABLED:false}
+    seconds: ${VOD_PREVIEW_SECONDS:30}
   # 播放清单以 media.media_url 为准（master.m3u8 或 index.m3u8）。
 
 logging:

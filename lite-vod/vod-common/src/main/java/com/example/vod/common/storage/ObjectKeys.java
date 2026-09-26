@@ -19,6 +19,11 @@ package com.example.vod.common.storage;
  *   hls/{fileId}/360p/segment_000.ts
  *   hls/{fileId}/480p/...
  * </pre>
+ *
+ * <p>二期试看 L2：
+ * <pre>
+ *   hls/{fileId}/preview.m3u8   # 仅前 N 秒切片清单，复用正片 ts
+ * </pre>
  */
 public final class ObjectKeys {
 
@@ -42,6 +47,11 @@ public final class ObjectKeys {
     /** 二期 ABR：master.m3u8。 */
     public static String hlsMaster(String fileId) {
         return "hls/" + fileId + "/master.m3u8";
+    }
+
+    /** 二期试看 L2：仅前 N 秒的 preview.m3u8。 */
+    public static String hlsPreview(String fileId) {
+        return "hls/" + fileId + "/preview.m3u8";
     }
 
     /** 二期 ABR：某档子清单。 */
