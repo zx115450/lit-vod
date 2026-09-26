@@ -41,9 +41,9 @@ class PlayGatewayFilterTest {
         minioStorage = mock(MinioStorage.class);
         mediaMapper = mock(MediaMapper.class);
         filter = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
-                new PreviewProperties(false, 120));
+                new PreviewProperties(false, 120, 1800));
         filterL2 = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
-                new PreviewProperties(true, 120));
+                new PreviewProperties(true, 120, 1800));
     }
 
     @Test

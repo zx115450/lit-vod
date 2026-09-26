@@ -30,9 +30,4 @@ public record PreviewProperties(
             maxSeconds = seconds;
         }
     }
-
-    /** 兼容旧构造（仅 l2 + seconds）。 */
-    public PreviewProperties(boolean l2Enabled, int seconds) {
-        this(l2Enabled, seconds, DEFAULT_MAX_SECONDS);
-    }
 }

@@ -39,9 +39,9 @@ class PlaySignatureServiceTest {
         when(playSignService.ttlSeconds()).thenReturn(3600L);
         when(playSignService.nowEpoch()).thenReturn(1710000000L);
         serviceL2Off = new PlaySignatureService(
-                mediaMapper, playSignService, new PreviewProperties(false, 120), minioStorage);
+                mediaMapper, playSignService, new PreviewProperties(false, 120, 1800), minioStorage);
         serviceL2On = new PlaySignatureService(
-                mediaMapper, playSignService, new PreviewProperties(true, 120), minioStorage);
+                mediaMapper, playSignService, new PreviewProperties(true, 120, 1800), minioStorage);
     }
 
     @Test
