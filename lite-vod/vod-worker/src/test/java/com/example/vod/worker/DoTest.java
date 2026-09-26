@@ -1,5 +1,6 @@
 package com.example.vod.worker;
 
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
@@ -9,6 +10,8 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.concurrent.TimeUnit;
 
+/** 本地草稿，勿接入 CI；需要时去掉 {@link Disabled} 再跑。 */
+@Disabled("local scratch; do not run in CI")
 public class DoTest {
 
 	@Test
