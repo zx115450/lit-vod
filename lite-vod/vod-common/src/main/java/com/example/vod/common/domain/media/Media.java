@@ -24,6 +24,8 @@ public class Media {
     private Long size;
     private MediaStatus status;
     private Integer ladderStatus;
+    /** 试看秒数：上传方指定；null/0 表示不生成试看清单。 */
+    private Integer previewSeconds;
     private String errorMsg;
     private LocalDateTime createTime;
     private LocalDateTime updateTime;

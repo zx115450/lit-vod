@@ -3,7 +3,6 @@ package com.example.vod.common.domain.media;
 import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Options;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
@@ -20,20 +19,25 @@ import java.util.List;
 @Mapper
 public interface MediaMapper {
 
-    @Select("SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg, create_time, update_time " +
+    @Select("SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, " +
+            "preview_seconds, error_msg, create_time, update_time " +
             "FROM media WHERE file_id = #{fileId}")
     Media findByFileId(String fileId);
 
-    @Insert("INSERT INTO media (file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg) " +
-            "VALUES (#{fileId}, #{objectKey}, #{filename}, #{mediaUrl}, #{coverUrl}, #{duration}, #{size}, #{status}, #{ladderStatus}, #{errorMsg})")
+    @Insert("INSERT INTO media (file_id, object_key, filename, media_url, cover_url, duration, size, status, " +
+            "ladder_status, preview_seconds, error_msg) " +
+            "VALUES (#{fileId}, #{objectKey}, #{filename}, #{mediaUrl}, #{coverUrl}, #{duration}, #{size}, " +
+            "#{status}, #{ladderStatus}, #{previewSeconds}, #{errorMsg})")
     void insert(Media media);
 
-    @Update("UPDATE media SET filename = #{filename}, size = #{size}, status = #{status}, update_time = NOW() " +
+    @Update("UPDATE media SET filename = #{filename}, size = #{size}, status = #{status}, " +
+            "preview_seconds = #{previewSeconds}, update_time = NOW() " +
             "WHERE file_id = #{fileId}")
     int updateUploaded(@Param("fileId") String fileId,
                        @Param("filename") String filename,
                        @Param("size") long size,
-                       @Param("status") MediaStatus status);
+                       @Param("status") MediaStatus status,
+                       @Param("previewSeconds") Integer previewSeconds);
 
     /**
      * 转码成功：写回 media_url / cover_url / duration，状态置 FINISHED，清空 error_msg。
@@ -67,7 +71,8 @@ public interface MediaMapper {
                      @Param("errorMsg") String errorMsg);
 
     @Select("<script>" +
-            "SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, error_msg, create_time, update_time " +
+            "SELECT id, file_id, object_key, filename, media_url, cover_url, duration, size, status, ladder_status, " +
+            "preview_seconds, error_msg, create_time, update_time " +
             "FROM media " +
             "<where>" +
             "<if test='name != null and name != \"\"'>filename LIKE CONCAT('%', #{name}, '%')</if>" +

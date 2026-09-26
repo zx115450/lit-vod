@@ -146,7 +146,7 @@ public class ProcedureConsumer {
 
         ffmpegService.transcodeHls(workDir);
         ffmpegService.captureCover(workDir, startTime);
-        uploadTranscodeOutputs(fileId, workDir);
+        uploadTranscodeOutputs(fileId, workDir, message.previewSeconds());
 
         String mediaUrl = ffmpegService.isAbrEnabled()
                 ? ObjectKeys.hlsMaster(fileId)
@@ -170,7 +170,7 @@ public class ProcedureConsumer {
 
         ffmpegService.transcodeFast(workDir);
         ffmpegService.captureCover(workDir, startTime);
-        uploadFastOutputs(fileId, workDir);
+        uploadFastOutputs(fileId, workDir, message.previewSeconds());
 
         String mediaUrl = ObjectKeys.hlsMaster(fileId);
         String coverUrl = ObjectKeys.cover(fileId);
@@ -192,7 +192,7 @@ public class ProcedureConsumer {
 
             ProcedureTaskMessage ladderMessage = new ProcedureTaskMessage(
                     fileId, message.mediaId(), message.objectKey(), ladderTask.getId(),
-                    ProcedureTaskMessage.TaskType.LADDER, true);
+                    ProcedureTaskMessage.TaskType.LADDER, true, message.previewSeconds());
             rabbitTemplate.convertAndSend(
                     com.example.vod.common.messaging.RabbitConfig.EXCHANGE_NAME,
                     com.example.vod.common.messaging.RabbitConfig.ROUTING_KEY,
@@ -233,32 +233,32 @@ public class ProcedureConsumer {
         ack(channel, deliveryTag);
     }
 
-    private void uploadTranscodeOutputs(String fileId, Path workDir) throws IOException {
+    private void uploadTranscodeOutputs(String fileId, Path workDir, Integer previewSeconds) throws IOException {
         Path cover = workDir.resolve("cover.jpg");
         if (!Files.isRegularFile(cover)) {
             throw new IllegalStateException("missing cover.jpg after transcode");
         }
 
         if (ffmpegService.isAbrEnabled()) {
-            uploadAbrOutputs(fileId, workDir, abrProperties.variants());
+            uploadAbrOutputs(fileId, workDir, abrProperties.variants(), previewSeconds);
         } else {
-            uploadSingleOutputs(fileId, workDir);
+            uploadSingleOutputs(fileId, workDir, previewSeconds);
         }
 
         minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
     }
 
-    private void uploadSingleOutputs(String fileId, Path workDir) throws IOException {
+    private void uploadSingleOutputs(String fileId, Path workDir, Integer previewSeconds) throws IOException {
         Path playlist = workDir.resolve("index.m3u8");
         if (!Files.isRegularFile(playlist)) {
             throw new IllegalStateException("missing index.m3u8 after transcode");
         }
         uploadSegments(workDir, fileId, "");
         minioStorage.uploadFile(ObjectKeys.hlsPlaylist(fileId), playlist, "application/vnd.apple.mpegurl");
-        uploadPreviewIfEnabled(fileId, playlist, null);
+        uploadPreviewIfEnabled(fileId, playlist, null, previewSeconds);
     }
 
-    private void uploadFastOutputs(String fileId, Path workDir) throws IOException {
+    private void uploadFastOutputs(String fileId, Path workDir, Integer previewSeconds) throws IOException {
         Path cover = workDir.resolve("cover.jpg");
         if (!Files.isRegularFile(cover)) {
             throw new IllegalStateException("missing cover.jpg after fast transcode");
@@ -283,7 +283,7 @@ public class ProcedureConsumer {
         minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
 
         minioStorage.uploadFile(ObjectKeys.cover(fileId), cover, "image/jpeg");
-        uploadPreviewIfEnabled(fileId, variantPlaylist, fast.label());
+        uploadPreviewIfEnabled(fileId, variantPlaylist, fast.label(), previewSeconds);
     }
 
     private void uploadLadderOutputs(String fileId, Path workDir) throws IOException {
@@ -308,7 +308,8 @@ public class ProcedureConsumer {
         minioStorage.uploadFile(ObjectKeys.hlsMaster(fileId), master, "application/vnd.apple.mpegurl");
     }
 
-    private void uploadAbrOutputs(String fileId, Path workDir, List<AbrProperties.Variant> variants) throws IOException {
+    private void uploadAbrOutputs(String fileId, Path workDir, List<AbrProperties.Variant> variants,
+                                  Integer previewSeconds) throws IOException {
         Path master = workDir.resolve("master.m3u8");
         if (!Files.isRegularFile(master)) {
             throw new IllegalStateException("missing master.m3u8 after abr transcode");
@@ -329,23 +330,30 @@ public class ProcedureConsumer {
 
         AbrProperties.Variant fast = abrProperties.fastVariantConfig();
         Path fastPlaylist = workDir.resolve(fast.label()).resolve("index.m3u8");
-        uploadPreviewIfEnabled(fileId, fastPlaylist, fast.label());
+        uploadPreviewIfEnabled(fileId, fastPlaylist, fast.label(), previewSeconds);
     }
 
     /**
      * 试看 L2：从正片 media playlist 截前 N 秒写 preview.m3u8 并上传（复用正片 ts）。
+     * N 优先用消息里的上传方秒数，缺省用配置默认；&lt;=0 跳过。
      *
      * @param uriPrefix ABR 档位目录名（如 360p）；单档传 null
      */
-    private void uploadPreviewIfEnabled(String fileId, Path sourcePlaylist, String uriPrefix) throws IOException {
+    private void uploadPreviewIfEnabled(String fileId, Path sourcePlaylist, String uriPrefix,
+                                        Integer previewSecondsOverride) throws IOException {
         if (!previewProperties.l2Enabled()) {
+            return;
+        }
+        int seconds = resolvePreviewSeconds(previewSecondsOverride);
+        if (seconds <= 0) {
+            log.info("skip preview.m3u8 fileId={} previewSeconds={}", fileId, seconds);
             return;
         }
         if (!Files.isRegularFile(sourcePlaylist)) {
             throw new IllegalStateException("missing source playlist for preview: " + sourcePlaylist);
         }
         String source = Files.readString(sourcePlaylist, StandardCharsets.UTF_8);
-        String preview = PreviewPlaylistBuilder.build(source, previewProperties.seconds(), uriPrefix);
+        String preview = PreviewPlaylistBuilder.build(source, seconds, uriPrefix);
         Path previewFile = sourcePlaylist.getParent().resolve("preview.m3u8");
         // 单档时 parent 即 workDir；ABR 时写在档位目录旁无妨，最终只上传文本
         if (uriPrefix != null && !uriPrefix.isBlank()) {
@@ -354,7 +362,14 @@ public class ProcedureConsumer {
         Files.writeString(previewFile, preview, StandardCharsets.UTF_8);
         minioStorage.uploadFile(ObjectKeys.hlsPreview(fileId), previewFile, "application/vnd.apple.mpegurl");
         log.info("uploaded preview.m3u8 fileId={} seconds={} prefix={}",
-                fileId, previewProperties.seconds(), uriPrefix == null ? "" : uriPrefix);
+                fileId, seconds, uriPrefix == null ? "" : uriPrefix);
+    }
+
+    private int resolvePreviewSeconds(Integer override) {
+        if (override != null) {
+            return override <= 0 ? 0 : Math.min(override, previewProperties.maxSeconds());
+        }
+        return previewProperties.seconds();
     }
 
     private void uploadSegments(Path dir, String fileId, String label) throws IOException {

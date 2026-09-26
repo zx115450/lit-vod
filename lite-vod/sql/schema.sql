@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS media (
     size         BIGINT                DEFAULT NULL COMMENT '大小（字节）',
     status       TINYINT      NOT NULL DEFAULT 0 COMMENT '0上传中 1已上传 2处理中 3可播 4完成 5失败',
     ladder_status TINYINT              DEFAULT NULL COMMENT '渐进式多档：0待补档 1补档中 2档位齐全 3部分档位失败',
+    preview_seconds INT                DEFAULT NULL COMMENT '试看秒数（上传方指定，Worker 据此出 preview.m3u8；0/空表示不生成试看）',
     error_msg    VARCHAR(512)          DEFAULT NULL COMMENT '失败原因',
     create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',

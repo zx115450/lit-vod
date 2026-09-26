@@ -63,10 +63,11 @@ vod:
     #     video-bitrate: 600000
     #     audio-bitrate: 96000
     #     bandwidth: 800000
-  # 试看 L2：转码后写 preview.m3u8；关闭则跳过
+  # 试看 L2：转码后按上传方秒数写 preview.m3u8；关闭则跳过
   preview:
     l2-enabled: ${VOD_PREVIEW_L2_ENABLED:false}
     seconds: ${VOD_PREVIEW_SECONDS:30}
+    max-seconds: ${VOD_PREVIEW_MAX_SECONDS:1800}
   # 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
   callback:
     url: ${VOD_CALLBACK_URL:}

@@ -88,23 +88,27 @@ public class MediaController {
 
     /**
      * 签发可播放 URL（HMAC-SHA256），对应步骤 10。
-     * 仅转码完成（FINISHED）的媒资可签发；exper 为试看秒数，不传视为 0。
+     * 仅可播媒资可签发；{@code preview=true} 时走试看（时长取媒资 previewSeconds，L2 绑 preview.m3u8）。
      */
     @GetMapping("/signature/play")
     public PlaySignatureResponse playSignature(
             @RequestParam String fileId,
-            @RequestParam(required = false, defaultValue = "0") int exper
+            @RequestParam(required = false, defaultValue = "false") boolean preview
     ) {
-        return playSignatureService.sign(fileId, exper);
+        return playSignatureService.sign(fileId, preview);
     }
 
     /**
-     * 确认直传完成，写入 filename、size，并把状态推进为 UPLOADED。
+     * 确认直传完成，写入 filename、size、previewSeconds，并把状态推进为处理中。
      */
     @PostMapping("/medias")
     public MediaDto commitMedia(@Valid @RequestBody CommitMediaRequest request) {
         // TODO: 接入管理端鉴权，校验当前用户是否有权操作该 fileId
-        return mediaService.commit(request.fileId(), request.filename(), request.progressive());
+        return mediaService.commit(
+                request.fileId(),
+                request.filename(),
+                request.progressive(),
+                request.previewSeconds());
     }
 
     /**

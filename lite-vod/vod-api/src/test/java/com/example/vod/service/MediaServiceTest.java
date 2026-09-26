@@ -1,6 +1,7 @@
 package com.example.vod.service;
 
 import com.example.vod.common.config.AbrProperties;
+import com.example.vod.common.config.PreviewProperties;
 import com.example.vod.common.messaging.RabbitConfig;
 import com.example.vod.controller.dto.MediaDto;
 import com.example.vod.controller.dto.PageResult;
@@ -42,6 +43,7 @@ class MediaServiceTest {
     private MinioStorage minioStorage;
     private RabbitTemplate rabbitTemplate;
     private AbrProperties abrProperties;
+    private PreviewProperties previewProperties;
     private MediaService mediaService;
 
     @BeforeEach
@@ -51,8 +53,10 @@ class MediaServiceTest {
         minioStorage = mock(MinioStorage.class);
         rabbitTemplate = mock(RabbitTemplate.class);
         abrProperties = mock(AbrProperties.class);
+        previewProperties = new PreviewProperties(true, 30, 1800);
         when(abrProperties.progressiveEnabled()).thenReturn(false);
-        mediaService = new MediaService(mediaMapper, mediaTaskMapper, minioStorage, rabbitTemplate, abrProperties);
+        mediaService = new MediaService(
+                mediaMapper, mediaTaskMapper, minioStorage, rabbitTemplate, abrProperties, previewProperties);
     }
 
     @Test
@@ -83,11 +87,39 @@ class MediaServiceTest {
         assertEquals(MediaTaskStatus.PENDING, inserted.getStatus());
         assertEquals(0, inserted.getAttempt());
 
-        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING);
+        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING, 30);
         verify(rabbitTemplate).convertAndSend(
                 eq(RabbitConfig.EXCHANGE_NAME),
                 eq(RabbitConfig.ROUTING_KEY),
-                eq(new ProcedureTaskMessage(fileId, media.getId(), media.getObjectKey(), inserted.getId())));
+                eq(new ProcedureTaskMessage(fileId, media.getId(), media.getObjectKey(), inserted.getId(),
+                        ProcedureTaskMessage.TaskType.FULL, false, 30)));
+    }
+
+    @Test
+    void commitShouldUseUploaderPreviewSeconds() {
+        String fileId = "f7c2a1b0e9d84f6a";
+        Media media = uploadingMedia(fileId);
+        Media processing = processingMedia(fileId, "lesson01.mp4", 2048L);
+        processing.setPreviewSeconds(120);
+
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media).thenReturn(processing);
+        when(minioStorage.head(media.getObjectKey())).thenReturn(true);
+        when(minioStorage.statSize(media.getObjectKey())).thenReturn(2048L);
+        when(mediaTaskMapper.findPendingByMediaId(media.getId())).thenReturn(List.of());
+
+        MediaDto dto = mediaService.commit(fileId, "lesson01.mp4", false, 120);
+
+        assertEquals(120, dto.previewSeconds());
+        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING, 120);
+
+        ArgumentCaptor<MediaTask> taskCaptor = ArgumentCaptor.forClass(MediaTask.class);
+        verify(mediaTaskMapper).insert(taskCaptor.capture());
+        verify(rabbitTemplate).convertAndSend(
+                eq(RabbitConfig.EXCHANGE_NAME),
+                eq(RabbitConfig.ROUTING_KEY),
+                eq(new ProcedureTaskMessage(fileId, media.getId(), media.getObjectKey(),
+                        taskCaptor.getValue().getId(),
+                        ProcedureTaskMessage.TaskType.FULL, false, 120)));
     }
 
     @Test
@@ -110,13 +142,13 @@ class MediaServiceTest {
         verify(mediaTaskMapper).insert(taskCaptor.capture());
         MediaTask inserted = taskCaptor.getValue();
 
-        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING);
+        verify(mediaMapper).updateUploaded(fileId, "lesson01.mp4", 2048L, MediaStatus.PROCESSING, 30);
         verify(mediaMapper).updateLadderFinished(fileId, MediaStatus.PROCESSING, null,
                 com.example.vod.common.domain.media.LadderStatus.PENDING.code());
 
         ProcedureTaskMessage expected = new ProcedureTaskMessage(
                 fileId, media.getId(), media.getObjectKey(), inserted.getId(),
-                ProcedureTaskMessage.TaskType.FAST, true);
+                ProcedureTaskMessage.TaskType.FAST, true, 30);
         verify(rabbitTemplate).convertAndSend(
                 eq(RabbitConfig.EXCHANGE_NAME),
                 eq(RabbitConfig.ROUTING_KEY),
@@ -148,7 +180,7 @@ class MediaServiceTest {
 
         ProcedureTaskMessage expected = new ProcedureTaskMessage(
                 fileId, media.getId(), media.getObjectKey(), inserted.getId(),
-                ProcedureTaskMessage.TaskType.FAST, true);
+                ProcedureTaskMessage.TaskType.FAST, true, 30);
         verify(rabbitTemplate).convertAndSend(
                 eq(RabbitConfig.EXCHANGE_NAME),
                 eq(RabbitConfig.ROUTING_KEY),
@@ -177,7 +209,7 @@ class MediaServiceTest {
 
         ProcedureTaskMessage expected = new ProcedureTaskMessage(
                 fileId, media.getId(), media.getObjectKey(), inserted.getId(),
-                ProcedureTaskMessage.TaskType.FULL, false);
+                ProcedureTaskMessage.TaskType.FULL, false, 30);
         verify(rabbitTemplate).convertAndSend(
                 eq(RabbitConfig.EXCHANGE_NAME),
                 eq(RabbitConfig.ROUTING_KEY),
@@ -242,7 +274,7 @@ class MediaServiceTest {
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
                 () -> mediaService.commit(fileId, "x.mp4"));
         assertEquals(400, ex.getStatusCode().value());
-        verify(mediaMapper, never()).updateUploaded(anyString(), anyString(), anyLong(), any());
+        verify(mediaMapper, never()).updateUploaded(anyString(), anyString(), anyLong(), any(), any());
         verify(mediaTaskMapper, never()).insert(any());
         verifyNoInteractions(rabbitTemplate);
     }
@@ -259,7 +291,7 @@ class MediaServiceTest {
         ResponseStatusException ex = assertThrows(ResponseStatusException.class,
                 () -> mediaService.commit(fileId, "x.mp4"));
         assertEquals(400, ex.getStatusCode().value());
-        verify(mediaMapper, never()).updateUploaded(anyString(), anyString(), anyLong(), any());
+        verify(mediaMapper, never()).updateUploaded(anyString(), anyString(), anyLong(), any(), any());
         verify(mediaTaskMapper, never()).insert(any());
         verifyNoInteractions(rabbitTemplate);
     }

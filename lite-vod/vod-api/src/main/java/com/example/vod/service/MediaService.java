@@ -1,6 +1,7 @@
 package com.example.vod.service;
 
 import com.example.vod.common.config.AbrProperties;
+import com.example.vod.common.config.PreviewProperties;
 import com.example.vod.common.domain.media.LadderStatus;
 import com.example.vod.common.messaging.RabbitConfig;
 import com.example.vod.controller.dto.MediaDto;
@@ -34,29 +35,39 @@ public class MediaService {
     private final MinioStorage minioStorage;
     private final RabbitTemplate rabbitTemplate;
     private final AbrProperties abrProperties;
+    private final PreviewProperties previewProperties;
 
     public MediaService(MediaMapper mediaMapper,
                         MediaTaskMapper mediaTaskMapper,
                         MinioStorage minioStorage,
                         RabbitTemplate rabbitTemplate,
-                        AbrProperties abrProperties) {
+                        AbrProperties abrProperties,
+                        PreviewProperties previewProperties) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
         this.minioStorage = minioStorage;
         this.rabbitTemplate = rabbitTemplate;
         this.abrProperties = abrProperties;
+        this.previewProperties = previewProperties;
     }
 
     @Transactional
     public MediaDto commit(String fileId, String filename) {
-        return commit(fileId, filename, null);
+        return commit(fileId, filename, null, null);
+    }
+
+    @Transactional
+    public MediaDto commit(String fileId, String filename, Boolean progressiveOverride) {
+        return commit(fileId, filename, progressiveOverride, null);
     }
 
     /**
-     * @param progressiveOverride {@code null} 用配置；非空则按请求决定渐进式 / 一次出齐
+     * @param progressiveOverride    {@code null} 用配置；非空则按请求决定渐进式 / 一次出齐
+     * @param previewSecondsOverride {@code null} 用 {@code vod.preview.seconds}；{@code <=0} 不生成试看
      */
     @Transactional
-    public MediaDto commit(String fileId, String filename, Boolean progressiveOverride) {
+    public MediaDto commit(String fileId, String filename, Boolean progressiveOverride,
+                           Integer previewSecondsOverride) {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
 
@@ -76,6 +87,8 @@ public class MediaService {
                     "file size exceeds limit: " + size);
         }
 
+        int previewSeconds = resolvePreviewSeconds(previewSecondsOverride);
+
         // 已有未完结任务则不再重复建任务、不发消息
         List<MediaTask> pendingTasks = mediaTaskMapper.findPendingByMediaId(media.getId());
         if (!pendingTasks.isEmpty()) {
@@ -93,11 +106,10 @@ public class MediaService {
         task.setAttempt(0);
         mediaTaskMapper.insert(task);
 
-        // 媒资进入处理中
-        mediaMapper.updateUploaded(fileId, filename, size, MediaStatus.PROCESSING);
+        // 媒资进入处理中，并落盘上传方指定的试看秒数
+        mediaMapper.updateUploaded(fileId, filename, size, MediaStatus.PROCESSING, previewSeconds);
 
         // 投递转码任务消息；发送失败时事务回滚，避免状态不一致
-        // 请求显式传 progressive 时覆盖配置；开启时只投快档，Worker 完成后再自投递补档。
         boolean progressive = progressiveOverride != null
                 ? progressiveOverride
                 : abrProperties.progressiveEnabled();
@@ -105,7 +117,8 @@ public class MediaService {
                 ? ProcedureTaskMessage.TaskType.FAST
                 : ProcedureTaskMessage.TaskType.FULL;
         ProcedureTaskMessage message = new ProcedureTaskMessage(
-                fileId, media.getId(), media.getObjectKey(), task.getId(), taskType, progressive);
+                fileId, media.getId(), media.getObjectKey(), task.getId(),
+                taskType, progressive, previewSeconds);
         if (progressive) {
             mediaMapper.updateLadderFinished(fileId, MediaStatus.PROCESSING, null, LadderStatus.PENDING.code());
         }
@@ -116,6 +129,19 @@ public class MediaService {
         return toDto(updated);
     }
 
+    /**
+     * null → 配置默认；&lt;=0 → 0（不试看）；其余封顶到 maxSeconds。
+     */
+    int resolvePreviewSeconds(Integer override) {
+        if (override == null) {
+            return previewProperties.seconds();
+        }
+        if (override <= 0) {
+            return 0;
+        }
+        return Math.min(override, previewProperties.maxSeconds());
+    }
+
     public MediaDto detail(String fileId) {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
@@ -124,20 +150,12 @@ public class MediaService {
 
     /**
      * 步骤 14：删除媒资。
-     * <ul>
-     *   <li>不存在：404</li>
-     *   <li>处理中（media.status == PROCESSING 或存在 PENDING/RUNNING 任务）：409，避免 Worker 写回已删记录</li>
-     *   <li>先删 MinIO 对象（raw/hls 前缀 + cover），再硬删 media_task 与 media；
-     *       对象删失败则整体失败，避免库无记录但桶内残留占磁盘</li>
-     *   <li>成功：204</li>
-     * </ul>
      */
     @Transactional
     public void delete(String fileId) {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
 
-        // 处理中拒绝删除：media 处于 PROCESSING，或仍有未完结任务
         if (media.getStatus() == MediaStatus.PROCESSING) {
             throw new ResponseStatusException(HttpStatus.CONFLICT,
                     "media is processing, cannot delete: " + fileId);
@@ -147,12 +165,10 @@ public class MediaService {
                     "media has running task, cannot delete: " + fileId);
         }
 
-        // 先删对象（失败抛 IllegalStateException → 500，DB 未提交）
         minioStorage.removePrefix(ObjectKeys.rawPrefix(fileId));
         minioStorage.removePrefix(ObjectKeys.hlsPrefix(fileId));
         minioStorage.removePrefix(ObjectKeys.cover(fileId));
 
-        // 再删库：先任务行，再媒资行（media.id 被任务行引用）
         mediaTaskMapper.deleteByMediaId(media.getId());
         mediaMapper.deleteByFileId(fileId);
     }
@@ -193,6 +209,7 @@ public class MediaService {
                 media.getSize(),
                 media.getStatus(),
                 media.getStatus().label(),
+                media.getPreviewSeconds(),
                 media.getErrorMsg(),
                 media.getCreateTime(),
                 media.getUpdateTime()

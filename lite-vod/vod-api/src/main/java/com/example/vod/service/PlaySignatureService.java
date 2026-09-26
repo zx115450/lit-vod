@@ -20,8 +20,7 @@ import java.util.Optional;
  * <p>VOD 内核只负责签发可播放地址，不负责课表鉴权；对接天机时由 tj-media 先鉴权再调本接口。
  *
  * <p>仅当 {@link MediaStatus#playable()}（PLAYABLE / FINISHED）才签发，否则 4xx。
- * 试看 L2 开启且 {@code exper>0} 且桶内已有 preview 时，path 绑 {@code preview.m3u8}；
- * 否则回退正片清单（L1 / 首期行为）。
+ * 试看模式：时长取媒资上的 {@code previewSeconds}（上传方决定），L2 开启时 path 绑 {@code preview.m3u8}。
  */
 @Service
 public class PlaySignatureService {
@@ -44,10 +43,10 @@ public class PlaySignatureService {
     /**
      * 签发可播放 URL。
      *
-     * @param fileId 必填
-     * @param exper  试看秒数，&lt;=0 视为 0（不试看）
+     * @param fileId  必填
+     * @param preview {@code true}=试看（时长用媒资 previewSeconds）；{@code false}=正片
      */
-    public PlaySignatureResponse sign(String fileId, int exper) {
+    public PlaySignatureResponse sign(String fileId, boolean preview) {
         if (fileId == null || fileId.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "fileId is required");
         }
@@ -59,25 +58,32 @@ public class PlaySignatureService {
                     "media not processed yet, current status: " + media.getStatus());
         }
 
-        int experSeconds = Math.max(0, exper);
-        long expireAt = playSignService.nowEpoch() + playSignService.ttlSeconds();
+        int experSeconds = 0;
+        String path = PlayPathSupport.signedPlaylistPath(fileId, media.getMediaUrl());
 
-        String path = resolveSignPath(fileId, media.getMediaUrl(), experSeconds);
+        if (preview) {
+            experSeconds = media.getPreviewSeconds() == null ? 0 : media.getPreviewSeconds();
+            if (experSeconds <= 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "preview not configured for this media (previewSeconds<=0)");
+            }
+            if (previewProperties.l2Enabled()) {
+                if (!minioStorage.exists(ObjectKeys.hlsPreview(fileId))) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT,
+                            "preview.m3u8 not found; re-transcode with L2 enabled");
+                }
+                path = PlayPathSupport.previewPlaylistPath(fileId);
+            }
+            // L2 关闭：仍签发正片 path，exper 带上传方秒数（L0/L1）
+        }
+
+        long expireAt = playSignService.nowEpoch() + playSignService.ttlSeconds();
         String sign = playSignService.sign(path, expireAt, experSeconds);
 
         String playUrl = String.format("%s%s?e=%d&exper=%d&sign=%s",
                 stripTrailingSlash(playSignService.publicBase()), path, expireAt, experSeconds, sign);
 
         return new PlaySignatureResponse(fileId, playUrl, sign, expireAt);
-    }
-
-    private String resolveSignPath(String fileId, String mediaUrl, int experSeconds) {
-        if (previewProperties.l2Enabled()
-                && experSeconds > 0
-                && minioStorage.exists(ObjectKeys.hlsPreview(fileId))) {
-            return PlayPathSupport.previewPlaylistPath(fileId);
-        }
-        return PlayPathSupport.signedPlaylistPath(fileId, mediaUrl);
     }
 
     private static String stripTrailingSlash(String base) {

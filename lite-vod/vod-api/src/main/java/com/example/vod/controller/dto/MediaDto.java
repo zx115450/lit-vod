@@ -18,6 +18,7 @@ public record MediaDto(
         Long size,
         MediaStatus status,
         String statusText,
+        Integer previewSeconds,
         String errorMsg,
         LocalDateTime createTime,
         LocalDateTime updateTime

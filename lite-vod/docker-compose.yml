@@ -94,6 +94,7 @@ services:
       MINIO_BUCKET: vod
       VOD_PREVIEW_L2_ENABLED: ${VOD_PREVIEW_L2_ENABLED:-false}
       VOD_PREVIEW_SECONDS: ${VOD_PREVIEW_SECONDS:-30}
+      VOD_PREVIEW_MAX_SECONDS: ${VOD_PREVIEW_MAX_SECONDS:-1800}
     ports:
       - "8080:8080"
     depends_on:
@@ -128,6 +129,7 @@ services:
       VOD_ABR_ENABLED: ${VOD_ABR_ENABLED:-true}
       VOD_PREVIEW_L2_ENABLED: ${VOD_PREVIEW_L2_ENABLED:-false}
       VOD_PREVIEW_SECONDS: ${VOD_PREVIEW_SECONDS:-30}
+      VOD_PREVIEW_MAX_SECONDS: ${VOD_PREVIEW_MAX_SECONDS:-1800}
     depends_on:
       mysql:
         condition: service_healthy

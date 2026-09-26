@@ -170,13 +170,17 @@
 <body>
   <main>
     <h1>Lite VOD 演示页</h1>
-    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。ABR 时签发 master，下方可手动选清晰度或保持 Auto。试看：传 exper&gt;0，L2 开启时 playUrl 指向 preview.m3u8（仅前 N 秒）。</p>
+    <p class="hint">两种转码模式（整文件直传）：「一次出齐」等全部档转完再播；「渐进式」先出低清可播，再后台补高清。commit 时传 progressive 与 previewSeconds（上传方定试看时长）。播放：可播(PLAYABLE)或已完成(FINISHED)均可申请。试看按钮走 preview=true，签发 preview.m3u8（时长取媒资上的 previewSeconds）。</p>
 
     <h2>1. 上传</h2>
     <div class="row">
       <input id="fileInput" type="file" accept="video/mp4,video/*,.mp4" />
       <button id="uploadFullBtn" type="button">一次出齐上传</button>
       <button id="uploadProgBtn" type="button" class="secondary">渐进式上传</button>
+    </div>
+    <div class="row">
+      <label for="previewSecondsInput" style="color:var(--muted);font-size:0.8rem;white-space:nowrap">试看秒数</label>
+      <input id="previewSecondsInput" type="number" min="0" step="1" value="30" title="上传方指定；0=不生成试看；空则用服务端默认" />
     </div>
     <div id="uploadBarWrap" class="bar-wrap"><div id="uploadBar" class="bar"></div></div>
     <p id="uploadMsg" class="msg info"></p>
@@ -185,12 +189,8 @@
     <div class="row">
       <input id="fileId" type="text" placeholder="fileId（上传后自动填入）" autocomplete="off" />
       <button id="playBtn" type="button">申请播放</button>
-      <button id="refreshBtn" type="button" class="secondary">查状态</button>
-    </div>
-    <div class="row">
-      <label for="experInput" style="color:var(--muted);font-size:0.8rem;white-space:nowrap">试看秒数</label>
-      <input id="experInput" type="number" min="1" step="1" value="30" title="exper：试看秒数，默认 30" />
       <button id="previewBtn" type="button" class="preview">试看</button>
+      <button id="refreshBtn" type="button" class="secondary">查状态</button>
     </div>
     <p id="err" class="msg err"></p>
     <p id="url"></p>
@@ -222,7 +222,7 @@
       const fileIdEl = document.getElementById('fileId');
       const playBtn = document.getElementById('playBtn');
       const previewBtn = document.getElementById('previewBtn');
-      const experInput = document.getElementById('experInput');
+      const previewSecondsInput = document.getElementById('previewSecondsInput');
       const refreshBtn = document.getElementById('refreshBtn');
       const errEl = document.getElementById('err');
       const urlEl = document.getElementById('url');
@@ -247,9 +247,10 @@
         previewBadge.textContent = '';
       }
 
-      function showPreviewBadge(exper) {
+      function showPreviewBadge(seconds) {
         previewBadge.classList.add('on');
-        previewBadge.textContent = '试看模式：仅前 ' + exper + ' 秒（L2 开启时清单为 preview.m3u8）';
+        const secHint = seconds > 0 ? ('约 ' + seconds + ' 秒') : '见 preview.m3u8';
+        previewBadge.textContent = '试看模式：' + secHint + '（清单为 preview.m3u8，时长由上传方 commit 时指定）';
       }
 
       function hideAbrPanel() {
@@ -261,10 +262,14 @@
         qualityState = null;
       }
 
-      function parseExper() {
-        const n = Number(experInput.value);
-        if (!Number.isFinite(n) || n <= 0) {
-          throw new Error('试看秒数须为正整数');
+      function parsePreviewSecondsForCommit() {
+        const raw = previewSecondsInput.value;
+        if (raw === '' || raw == null) {
+          return null; // 服务端默认
+        }
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0) {
+          throw new Error('试看秒数须为 >=0 的整数（0=不生成试看）');
         }
         return Math.floor(n);
       }
@@ -582,20 +587,33 @@
       }
 
       async function commitAndWatch(fileId, filename, progressive) {
-        setUploadMsg('确认上传（commit，progressive=' + progressive + '）…', 'info');
+        let previewSeconds;
+        try {
+          previewSeconds = parsePreviewSecondsForCommit();
+        } catch (e) {
+          setUploadMsg(e.message || String(e), 'err');
+          throw e;
+        }
+        setUploadMsg('确认上传（commit，progressive=' + progressive +
+          ', previewSeconds=' + (previewSeconds == null ? 'default' : previewSeconds) + '）…', 'info');
+        const body = { fileId: fileId, filename: filename, progressive: progressive };
+        if (previewSeconds != null) {
+          body.previewSeconds = previewSeconds;
+        }
         const media = await readJson(await fetch(API_BASE + '/medias', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             Accept: 'application/json'
           },
-          body: JSON.stringify({ fileId: fileId, filename: filename, progressive: progressive })
+          body: JSON.stringify(body)
         }));
         const label = media.statusText || media.status || '';
         const tip = progressive
           ? '已提交渐进式任务。低清就绪后即可播放，高清后台补档。'
           : '已提交一次出齐任务。全部档转完后即可播放。';
-        setUploadMsg(tip + ' fileId=' + fileId + '  状态=' + label, 'ok');
+        const ps = media.previewSeconds != null ? (' 试看=' + media.previewSeconds + 's') : '';
+        setUploadMsg(tip + ' fileId=' + fileId + '  状态=' + label + ps, 'ok');
         if (media.status !== 'FINISHED' && media.status !== 4) {
           startPoll(fileId, progressive);
         }
@@ -666,16 +684,16 @@
         return '[单档 index] ';
       }
 
-      async function attachSource(playUrl, exper) {
+      async function attachSource(playUrl, isPreview, previewSeconds) {
         destroyHls();
         const src = toPlayableUrl(playUrl);
         const isMaster = /\/master\.m3u8(\?|$)/i.test(src);
-        const isPreview = /\/preview\.m3u8(\?|$)/i.test(src);
+        const isPreviewPath = /\/preview\.m3u8(\?|$)/i.test(src);
         urlEl.textContent = playlistKindLabel(src) + 'playUrl: ' + src;
-        if (exper > 0) {
-          showPreviewBadge(exper);
-          if (!isPreview) {
-            previewBadge.textContent += '；当前 path 非 preview（L2 未开或无 preview 产物，按 L0/L1 exper 签发）';
+        if (isPreview) {
+          showPreviewBadge(previewSeconds || 0);
+          if (!isPreviewPath) {
+            previewBadge.textContent += '；当前 path 非 preview（L2 未开或无产物）';
           }
         }
 
@@ -706,7 +724,7 @@
         throw new Error('当前浏览器不支持 HLS');
       }
 
-      async function requestPlay(exper) {
+      async function requestPlay(preview) {
         const fileId = fileIdEl.value.trim();
         errEl.textContent = '';
         errEl.className = 'msg err';
@@ -720,14 +738,21 @@
         setPlayBusy(true);
         try {
           let url = API_BASE + '/signature/play?fileId=' + encodeURIComponent(fileId);
-          if (exper > 0) {
-            url += '&exper=' + encodeURIComponent(String(exper));
+          if (preview) {
+            url += '&preview=true';
           }
           const data = await readJson(await fetch(url, { headers: { Accept: 'application/json' } }));
           if (!data || !data.playUrl) {
             throw new Error('响应缺少 playUrl');
           }
-          await attachSource(data.playUrl, exper);
+          let previewSeconds = 0;
+          if (preview) {
+            try {
+              const m = await fetchMedia(fileId);
+              previewSeconds = m.previewSeconds || 0;
+            } catch (_) { /* ignore */ }
+          }
+          await attachSource(data.playUrl, preview, previewSeconds);
         } catch (e) {
           destroyHls();
           errEl.textContent = e.message || String(e);
@@ -737,16 +762,11 @@
       }
 
       playBtn.addEventListener('click', function () {
-        requestPlay(0);
+        requestPlay(false);
       });
 
       previewBtn.addEventListener('click', function () {
-        try {
-          requestPlay(parseExper());
-        } catch (e) {
-          errEl.className = 'msg err';
-          errEl.textContent = e.message || String(e);
-        }
+        requestPlay(true);
       });
 
       refreshBtn.addEventListener('click', async function () {
@@ -762,8 +782,9 @@
           const abrHint = /master\.m3u8$/i.test(mediaUrl)
             ? '（ABR：media_url=master.m3u8）'
             : (mediaUrl ? '（单档：' + mediaUrl + '）' : '');
+          const ps = m.previewSeconds != null ? (' 试看秒数=' + m.previewSeconds) : '';
           errEl.className = 'msg ok';
-          errEl.textContent = '状态=' + (m.statusText || m.status) + abrHint +
+          errEl.textContent = '状态=' + (m.statusText || m.status) + abrHint + ps +
             (m.errorMsg ? ('  ' + m.errorMsg) : '');
         } catch (e) {
           errEl.className = 'msg err';
@@ -773,10 +794,6 @@
 
       fileIdEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') playBtn.click();
-      });
-
-      experInput.addEventListener('keydown', function (e) {
-        if (e.key === 'Enter') previewBtn.click();
       });
     })();
   </script>

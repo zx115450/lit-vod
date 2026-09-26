@@ -143,7 +143,7 @@ class MediaControllerTest {
 
     @Test
     void commitMediaShouldReturnDto() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class), any())).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -155,19 +155,31 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.status").value("PROCESSING"))
                 .andExpect(jsonPath("$.statusText").value("处理中"));
 
-        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null);
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, null);
     }
 
     @Test
     void commitMediaShouldPassProgressiveFlag() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class), any())).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fileId\":\"f7c2a1b0e9d84f6a\",\"filename\":\"lesson01.mp4\",\"progressive\":true}"))
                 .andExpect(status().isOk());
 
-        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", true);
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", true, null);
+    }
+
+    @Test
+    void commitMediaShouldPassPreviewSeconds() throws Exception {
+        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
+
+        mockMvc.perform(post("/vod/medias")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fileId\":\"f7c2a1b0e9d84f6a\",\"filename\":\"lesson01.mp4\",\"previewSeconds\":120}"))
+                .andExpect(status().isOk());
+
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, 120);
     }
 
     @Test
@@ -209,10 +221,10 @@ class MediaControllerTest {
 
     @Test
     void playSignatureShouldReturnSignedUrl() throws Exception {
-        when(playSignatureService.sign("f7c2a1b0e9d84f6a", 300)).thenReturn(
+        when(playSignatureService.sign("f7c2a1b0e9d84f6a", true)).thenReturn(
                 new PlaySignatureResponse(
                         "f7c2a1b0e9d84f6a",
-                        "http://localhost/hls/f7c2a1b0e9d84f6a/index.m3u8?e=1710003600&exper=300&sign=deadbeef",
+                        "http://localhost/hls/f7c2a1b0e9d84f6a/preview.m3u8?e=1710003600&exper=120&sign=deadbeef",
                         "deadbeef",
                         1710003600L
                 )
@@ -220,18 +232,18 @@ class MediaControllerTest {
 
         mockMvc.perform(get("/vod/signature/play")
                         .param("fileId", "f7c2a1b0e9d84f6a")
-                        .param("exper", "300"))
+                        .param("preview", "true"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.fileId").value("f7c2a1b0e9d84f6a"))
                 .andExpect(jsonPath("$.signature").value("deadbeef"))
                 .andExpect(jsonPath("$.expireAt").value(1710003600))
                 .andExpect(jsonPath("$.playUrl").value(
-                        "http://localhost/hls/f7c2a1b0e9d84f6a/index.m3u8?e=1710003600&exper=300&sign=deadbeef"));
+                        "http://localhost/hls/f7c2a1b0e9d84f6a/preview.m3u8?e=1710003600&exper=120&sign=deadbeef"));
     }
 
     @Test
-    void playSignatureShouldDefaultExperToZero() throws Exception {
-        when(playSignatureService.sign("f7c2a1b0e9d84f6a", 0)).thenReturn(
+    void playSignatureShouldDefaultPreviewToFalse() throws Exception {
+        when(playSignatureService.sign("f7c2a1b0e9d84f6a", false)).thenReturn(
                 new PlaySignatureResponse(
                         "f7c2a1b0e9d84f6a",
                         "http://localhost/hls/f7c2a1b0e9d84f6a/index.m3u8?e=1710003600&exper=0&sign=cafe",
@@ -284,6 +296,7 @@ class MediaControllerTest {
                 1024L,
                 MediaStatus.PROCESSING,
                 "处理中",
+                30,
                 null,
                 LocalDateTime.of(2024, 1, 1, 10, 0, 0),
                 LocalDateTime.of(2024, 1, 1, 10, 30, 0)
