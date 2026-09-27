@@ -55,18 +55,15 @@ class MediaControllerTest {
     @MockBean
     private PlaySignatureService playSignatureService;
 
-    // PlayGatewayFilter（步骤 11）依赖以下 bean，@WebMvcTest 会装载 Filter，需一并 mock
+    // PlayGatewayFilter / PlayPlaylistController 依赖，@WebMvcTest 会装载，需一并 mock
     @MockBean
-    private com.example.vod.service.PlaySignService playSignService;
+    private com.example.vod.service.PlayAuthService playAuthService;
+
+    @MockBean
+    private com.example.vod.service.PlayPlaylistService playPlaylistService;
 
     @MockBean
     private com.example.vod.common.storage.MinioStorage minioStorage;
-
-    @MockBean
-    private com.example.vod.common.domain.media.MediaMapper mediaMapper;
-
-    @MockBean
-    private com.example.vod.common.config.PreviewProperties previewProperties;
 
     @Test
     void uploadSignatureShouldReturnDto() throws Exception {

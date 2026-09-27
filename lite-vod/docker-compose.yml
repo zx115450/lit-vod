@@ -70,6 +70,8 @@ services:
       - |
         until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do sleep 1; done
         mc mb -p local/vod
+        # Nginx 直反 ts 需要源站可 GET；学员入口仍是 :80（勿把 :9000 当播放地址）
+        mc anonymous set download local/vod/hls || true
     networks:
       - lite-vod
 
@@ -92,6 +94,10 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: vod
+      VOD_PLAY_SECRET: ${VOD_PLAY_SECRET:-dev-play-secret-change-me}
+      # 播放入口走 Nginx:80；关闭 Filter，由 auth_request + 直反 MinIO
+      VOD_PLAY_PUBLIC_BASE: ${VOD_PLAY_PUBLIC_BASE:-http://localhost}
+      VOD_PLAY_GATEWAY_FILTER_ENABLED: ${VOD_PLAY_GATEWAY_FILTER_ENABLED:-false}
       VOD_PREVIEW_L2_ENABLED: ${VOD_PREVIEW_L2_ENABLED:-false}
       VOD_PREVIEW_SECONDS: ${VOD_PREVIEW_SECONDS:-30}
       VOD_PREVIEW_MAX_SECONDS: ${VOD_PREVIEW_MAX_SECONDS:-1800}

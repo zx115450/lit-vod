@@ -5,6 +5,8 @@ import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.storage.MinioStorage;
 import com.example.vod.config.PlaySignProperties;
+import com.example.vod.service.PlayAuthService;
+import com.example.vod.service.PlayPlaylistService;
 import com.example.vod.service.PlaySignService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,10 +42,17 @@ class PlayGatewayFilterTest {
         playSignService = new PlaySignService(new PlaySignProperties("test-secret", "http://localhost:8080", 3600L));
         minioStorage = mock(MinioStorage.class);
         mediaMapper = mock(MediaMapper.class);
-        filter = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
-                new PreviewProperties(false, 120, 1800));
-        filterL2 = new PlayGatewayFilter(playSignService, minioStorage, mediaMapper,
-                new PreviewProperties(true, 120, 1800));
+        PlayPlaylistService playlistService = new PlayPlaylistService(minioStorage);
+        filter = new PlayGatewayFilter(
+                new PlayAuthService(playSignService, mediaMapper, minioStorage,
+                        new PreviewProperties(false, 120, 1800)),
+                playlistService,
+                minioStorage);
+        filterL2 = new PlayGatewayFilter(
+                new PlayAuthService(playSignService, mediaMapper, minioStorage,
+                        new PreviewProperties(true, 120, 1800)),
+                playlistService,
+                minioStorage);
     }
 
     @Test

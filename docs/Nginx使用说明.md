@@ -25,18 +25,19 @@ Nginx 是 **对外统一入口**（本机默认 `http://localhost:80`），不�
 | 播放网关（目标） | `/hls/**` 验签后反代 MinIO；学员不直连桶 |
 | TLS / 限流等 | 首期可不做；生产可再加 |
 
-推荐流量（正式方案）：
+推荐流量（Compose 默认已落地，详见 [08-Nginx auth_request 播放网关](./06-工程化实践记录/08-Nginx-auth_request播放网关.md)）：
 
 ```text
 浏览器
   ├─ /              → Nginx 静态页
   ├─ /vod/...       → Nginx → vod-api（签发、媒资等）
   └─ /hls/...?e&sign
-                    → Nginx auth_request → vod-api 验签
-                    → 通过后 Nginx → MinIO 取 m3u8 / ts
+                    → Nginx auth_request → vod-api /internal/play-auth
+                    → *.m3u8 → vod-api 改写清单
+                    → *.ts   → Nginx → MinIO
 ```
 
-临时开发方案（步骤 11 已允许）：播放走 `vod-api` 的 `PlayGatewayFilter`，Nginx 仍可只做静态页 + `/vod/` 反代。
+本地无 Nginx 时：`VOD_PLAY_GATEWAY_FILTER_ENABLED=true`，播放走 `PlayGatewayFilter`。
 
 ## 2. Compose 里怎么用
 
@@ -99,35 +100,41 @@ server {
 
 注意：`proxy_pass` 末尾带 URI 前缀 `/vod/` 时，会按「替换 location 前缀」规则拼接，需与上游 context-path 一致，避免多一层或少一层 `/vod`。
 
-### 3.3 尚未写入 conf 的部分
+### 3.3 `/hls/` 播放网关（已写入 conf）
 
-`/hls/` 播放验签 **尚未** 出现在当前 `default.conf` 中。开发阶段可用 Spring Filter；切正式方案时按下一节追加。
+当前 `default.conf` 已按正式方案拆分：
 
-## 4. 目标：播放网关（步骤 11）
+| location | 行为 |
+| --- | --- |
+| `=/_auth` | `internal` 子请求 → `vod-api` `/internal/play-auth` |
+| `~ \.m3u8$` | `auth_request` 后反代 Java 改写清单 |
+| `~ \.ts$` 与前缀 `/hls/` | `auth_request` 后 `rewrite` 到 MinIO `/vod/hls/...` |
 
-公网不开放 MinIO 匿名读。播放请求必须带合法 `e`、`sign`。
+## 4. 播放网关说明（步骤 11 / 工程化 08）
 
-### 4.1 推荐：`auth_request` + Java 验签
+播放请求必须带合法 `e`、`sign`。学员入口是 Nginx `:80`，不要把 MinIO `:9000` 当播放地址。
+
+### 4.1 `auth_request` + Java 验签（仓库已落地）
 
 ```nginx
-location /hls/ {
-    auth_request /_auth;
-    proxy_pass http://minio:9000/vod/hls/;
-    proxy_set_header Host minio:9000;
-    proxy_hide_header x-amz-id-2;
-    proxy_hide_header x-amz-request-id;
-
-    # 演示页若与播放不同源，按需打开 CORS（签名在 query，勿与 cookie + * 混用）
-    # add_header Access-Control-Allow-Origin *;
-    # add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS";
-}
-
 location = /_auth {
     internal;
     proxy_pass http://vod-api:8080/internal/play-auth;
     proxy_pass_request_body off;
     proxy_set_header Content-Length "";
     proxy_set_header X-Original-URI $request_uri;
+}
+
+location ~ ^/hls/.+\.m3u8$ {
+    auth_request /_auth;
+    proxy_pass http://vod-api:8080;
+}
+
+location ~ ^/hls/.+\.ts$ {
+    auth_request /_auth;
+    rewrite ^/hls/(.*)$ /vod/hls/$1 break;
+    proxy_pass http://minio:9000;
+    proxy_set_header Host minio:9000;
 }
 ```
 
@@ -136,9 +143,9 @@ location = /_auth {
 1. 浏览器请求 `/hls/{fileId}/index.m3u8?e&exper&sign`
 2. Nginx 先内部请求 `/_auth` → Java `GET /internal/play-auth`
 3. Java 根据 `X-Original-URI` 验 HMAC，返回 `200` 或 `403`
-4. 仅当 200 时，Nginx 才 `proxy_pass` 到 MinIO 取对象
+4. 清单走 Java 改写补 query；分片直反 MinIO
 
-路径拼接：对外 `/hls/xxx` → 桶内对象键一般是 `hls/xxx`（bucket 名 `vod` 在 MinIO path-style 里常体现为 `/vod/hls/...`，以你实际 MinIO 访问风格为准，联调时用日志核对）。
+路径拼接：对外 `/hls/xxx` → 桶内 `hls/xxx`（path-style 为 `/vod/hls/...`）。
 
 ### 4.2 m3u8 与 ts 的签名约定
 
@@ -160,18 +167,17 @@ location = /_auth {
 
 ## 5. 与 Spring Filter 如何切换
 
-| 阶段 | `VOD_PLAY_PUBLIC_BASE` 示例 | 播放流量 |
+| 阶段 | 环境变量 | 播放流量 |
 | --- | --- | --- |
-| 临时 Filter | `http://localhost:8080` | 直打 api，`PlayGatewayFilter` 验签并读 MinIO |
-| Nginx 网关 | `http://localhost` | 打 80 端口 `/hls/`，片源不经 Tomcat |
+| Nginx 网关（Compose 默认） | `VOD_PLAY_PUBLIC_BASE=http://localhost`，`VOD_PLAY_GATEWAY_FILTER_ENABLED=false` | `:80` `/hls/`，ts 不经 Tomcat |
+| 临时 Filter | `VOD_PLAY_PUBLIC_BASE=http://localhost:8080`，`VOD_PLAY_GATEWAY_FILTER_ENABLED=true` | 直打 api，`PlayGatewayFilter` |
 
 切换检查清单：
 
-- [ ] `default.conf` 已加 `/hls/` + `/_auth`
-- [ ] `vod-api` 已提供 `/internal/play-auth`（或等价）
-- [ ] `public-base` 改为 Nginx 入口
-- [ ] MinIO 仍不对学员匿名读
-- [ ] 演示页与 `/hls/` 尽量同域，减少 CORS
+- [x] `default.conf` 已加 `/hls/` + `/_auth`（拆 m3u8/ts）
+- [x] `vod-api` 已提供 `/internal/play-auth` 与清单改写
+- [x] Compose 已切 `public-base` 并关闭 Filter
+- [ ] 本机 `nginx -t` / 演示页联调通过
 - [ ] curl 无签 403、合法 playUrl 200、篡改 403
 
 ## 6. 演示页怎么挂
@@ -238,13 +244,14 @@ curl -i "$PLAY_URL"
 
 1. 读懂并改通当前 `default.conf` 的 `/` 与 `/vod/`
 2. 用 Compose 挂上演示页，走通步骤 12（可先 Filter 播放）
-3. 实现 `/internal/play-auth`，把 `/hls/` 段写进 Nginx，改 `public-base`
-4. 对照步骤 11 完成标准做 T5～T7
+3. 按 [08-Nginx auth_request 播放网关](./06-工程化实践记录/08-Nginx-auth_request播放网关.md) 做半天扫盲，再落地 `/internal/play-auth` 与 conf
+4. 改 `public-base`，对照步骤 11 完成标准做 T5～T7
 
 ## 10. 相关文档
 
 | 文档 | 内容 |
 | --- | --- |
+| [08-Nginx auth_request 播放网关](./06-工程化实践记录/08-Nginx-auth_request播放网关.md) | 反代 / `auth_request` 扫盲与生产化分步落地 |
 | [Nginx 安装包目录说明](./Nginx安装包目录说明.md) | Windows zip / Docker 各目录含义 |
 | [01-环境搭建](./05-分步实现指南/01-环境搭建.md) | Compose 拉起含 Nginx |
 | [11-播放网关验签](./05-分步实现指南/11-播放网关验签.md) | 验签规则与示意 conf |

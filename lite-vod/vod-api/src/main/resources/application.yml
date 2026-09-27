@@ -31,12 +31,12 @@ mybatis:
     map-underscore-to-camel-case: true
   type-handlers-package: com.example.vod.common.domain.media
 
-# 播放签名配置（步骤 10/11）：密钥仅环境变量，勿入库勿提交
-# 临时用 Spring Filter 验签时 public-base 指向本 API；切 Nginx 后改为网关入口
+# 播放签名（步骤 10/11）：密钥仅环境变量。IDE 本地默认走 Filter；Compose 覆盖为 Nginx 网关
 play-sign:
   secret: ${VOD_PLAY_SECRET:dev-play-secret-change-me}
   public-base: ${VOD_PLAY_PUBLIC_BASE:http://localhost:8080}
   ttl-seconds: ${VOD_PLAY_TTL_SECONDS:3600}
+  gateway-filter-enabled: ${VOD_PLAY_GATEWAY_FILTER_ENABLED:true}
 
 # 上传配置（二期）：multipart-enabled 由配置绑定，关闭时接口返回 501
 vod:
