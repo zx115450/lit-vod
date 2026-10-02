@@ -7,8 +7,14 @@ USE lite_vod;
 CREATE TABLE IF NOT EXISTS media (
     id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     file_id      VARCHAR(64)  NOT NULL COMMENT '对外唯一标识，对齐腾讯 fileId',
+    asset_type   VARCHAR(16)  NOT NULL DEFAULT 'VIDEO' COMMENT 'VIDEO/DOCUMENT/CHAPTER/IMAGE/AUDIO/SUBTITLE',
     object_key   VARCHAR(512) NOT NULL COMMENT '原始对象键，如 raw/{fileId}/source.mp4',
     filename     VARCHAR(255)          DEFAULT NULL COMMENT '原始文件名',
+    mime_type    VARCHAR(128)          DEFAULT NULL COMMENT 'MIME，如 video/mp4、text/markdown',
+    parent_file_id VARCHAR(64)         DEFAULT NULL COMMENT 'CHAPTER 挂 DOCUMENT；字幕挂 VIDEO',
+    chapter_no   INT                   DEFAULT NULL COMMENT 'CHAPTER 序号，从 1 起',
+    page_count   INT                   DEFAULT NULL COMMENT '文档页数',
+    extract_key  VARCHAR(512)          DEFAULT NULL COMMENT 'PDF 抽取文本对象键',
     media_url    VARCHAR(512)          DEFAULT NULL COMMENT '播放入口，如 hls/{fileId}/index.m3u8',
     cover_url    VARCHAR(512)          DEFAULT NULL COMMENT '封面对象路径',
     duration     FLOAT                 DEFAULT NULL COMMENT '时长（秒）',
@@ -20,16 +26,18 @@ CREATE TABLE IF NOT EXISTS media (
     create_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     update_time  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (id),
-    UNIQUE KEY uk_media_file_id (file_id)
+    UNIQUE KEY uk_media_file_id (file_id),
+    KEY idx_media_parent (parent_file_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='媒资';
 
 CREATE TABLE IF NOT EXISTS media_task (
     id           BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
     media_id     BIGINT       NOT NULL COMMENT '关联 media.id',
     file_id      VARCHAR(64)  NOT NULL COMMENT '冗余 fileId，便于日志',
-    type         VARCHAR(32)  NOT NULL DEFAULT 'PROCEDURE' COMMENT 'TRANSCODE / COVER / PROCEDURE',
+    type         VARCHAR(32)  NOT NULL DEFAULT 'PROCEDURE' COMMENT 'PROCEDURE/TRANSCODE/COVER/EXTRACT_TEXT/SPLIT_CHAPTER/THUMBNAIL',
     status       TINYINT      NOT NULL DEFAULT 0 COMMENT '0 PENDING 1 RUNNING 2 SUCCESS 3 FAILED',
     attempt      INT          NOT NULL DEFAULT 0 COMMENT '重试次数',
+    payload      VARCHAR(512)          DEFAULT NULL COMMENT '任务扩展 JSON，如 {"splitRule":"MARKDOWN"}',
     error_msg    VARCHAR(512)          DEFAULT NULL COMMENT '失败原因',
     created_at   DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     finished_at  DATETIME              DEFAULT NULL COMMENT '结束时间',
@@ -37,3 +45,20 @@ CREATE TABLE IF NOT EXISTS media_task (
     KEY idx_media_task_media_id (media_id),
     KEY idx_media_task_file_id (file_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='媒资处理任务';
+
+CREATE TABLE IF NOT EXISTS procedure_dead_letter (
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    task_id          BIGINT       NOT NULL COMMENT 'media_task.id，一任务一行',
+    media_id         BIGINT       NOT NULL COMMENT 'media.id',
+    file_id          VARCHAR(64)  NOT NULL COMMENT '媒资 fileId',
+    object_key       VARCHAR(512) NOT NULL COMMENT '原始对象键，重放消息用',
+    task_type        VARCHAR(16)  NOT NULL COMMENT 'FULL / FAST / LADDER',
+    progressive      TINYINT      NOT NULL DEFAULT 0 COMMENT '1 表示渐进式',
+    preview_seconds  INT                   DEFAULT NULL COMMENT '试看秒数',
+    attempt          INT          NOT NULL COMMENT '停放时的尝试次数',
+    error_msg        VARCHAR(512)          DEFAULT NULL COMMENT '失败原因',
+    created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '落入死信的时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_dead_task_id (task_id),
+    KEY idx_dead_file_id (file_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='转码死信，与队列 vod.procedure.dlq 成对';

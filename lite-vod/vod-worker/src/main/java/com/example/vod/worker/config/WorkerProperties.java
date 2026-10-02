@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * Worker 转码相关参数。
  *
  * @param tempDir        本地工作目录前缀，转码产物落在 {tempDir}/{fileId}/
- * @param maxAttempts    最大重试次数（含首次），超过则 ack 停止，避免毒消息死循环
+ * @param maxAttempts    最大重试次数（含首次）。未用尽时按 attempt×5 秒进入等待队列，用尽则 ack 停止
  * @param maxDurationSec 时长上限（秒），超过直接 FAILED 不重试；6 小时 = 21600
  * @param concurrency   每个 Worker 容器消费并发数，1~2 避免拖垮同机 API
  */

@@ -130,8 +130,9 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET: vod
-      # 默认打到 api 测试接收端；可改成 webhook.site 或业务真实地址
+      # 默认打到 api 测试接收端；对接书城：http://host.docker.internal:8081/api/internal/media/callback
       VOD_CALLBACK_URL: ${VOD_CALLBACK_URL:-http://vod-api:8080/vod/callback/test}
+      VOD_CALLBACK_AUTH_TOKEN: ${VOD_CALLBACK_AUTH_TOKEN:-dev-internal-token-change-me}
       VOD_ABR_ENABLED: ${VOD_ABR_ENABLED:-true}
       VOD_PREVIEW_L2_ENABLED: ${VOD_PREVIEW_L2_ENABLED:-false}
       VOD_PREVIEW_SECONDS: ${VOD_PREVIEW_SECONDS:-30}

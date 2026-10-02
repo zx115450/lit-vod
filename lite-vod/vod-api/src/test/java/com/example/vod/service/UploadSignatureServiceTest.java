@@ -8,6 +8,7 @@ import com.example.vod.controller.dto.MultipartUploadRequest;
 import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.PartEtag;
 import com.example.vod.controller.dto.UploadSignatureResponse;
+import com.example.vod.common.domain.media.AssetType;
 import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
@@ -72,8 +73,31 @@ class UploadSignatureServiceTest {
         verify(mediaMapper).insert(captor.capture());
         Media inserted = captor.getValue();
         assertEquals(MediaStatus.UPLOADING, inserted.getStatus());
+        assertEquals(AssetType.VIDEO, inserted.getAssetType());
+        assertEquals("video/mp4", inserted.getMimeType());
         assertEquals(response.objectKey(), inserted.getObjectKey());
         assertEquals(response.fileId(), inserted.getFileId());
+    }
+
+    @Test
+    void createDocumentShouldUseBinObjectKeyAndAssetType() {
+        when(minioStorage.presignedPut(any(String.class), eq(Duration.ofMinutes(30))))
+                .thenReturn("http://localhost:9000/vod/raw/test/source.bin?X-Amz-Algorithm=...");
+
+        UploadSignatureResponse response = service.create(AssetType.DOCUMENT);
+
+        assertEquals("raw/" + response.fileId() + "/source.bin", response.objectKey());
+        ArgumentCaptor<Media> captor = ArgumentCaptor.forClass(Media.class);
+        verify(mediaMapper).insert(captor.capture());
+        Media inserted = captor.getValue();
+        assertEquals(AssetType.DOCUMENT, inserted.getAssetType());
+        assertEquals("application/octet-stream", inserted.getMimeType());
+    }
+
+    @Test
+    void createChapterShouldReject() {
+        assertThrows(ResponseStatusException.class, () -> service.create(AssetType.CHAPTER));
+        verify(mediaMapper, never()).insert(any());
     }
 
     // ==================== Multipart 初始化 ====================

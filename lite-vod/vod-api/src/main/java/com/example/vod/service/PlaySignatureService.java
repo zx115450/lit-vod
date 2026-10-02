@@ -1,6 +1,7 @@
 package com.example.vod.service;
 
 import com.example.vod.common.config.PreviewProperties;
+import com.example.vod.common.domain.media.AssetType;
 import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
@@ -52,6 +53,12 @@ public class PlaySignatureService {
         }
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
+
+        AssetType assetType = media.getAssetType() != null ? media.getAssetType() : AssetType.VIDEO;
+        if (assetType != AssetType.VIDEO) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "play signature only for VIDEO");
+        }
 
         if (!media.getStatus().playable()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,

@@ -12,10 +12,15 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 /**
- * VOD 转码任务队列配置，api 与 worker 共用同一组声明。
+ * VOD 任务队列配置，api 与 worker 共用同一组声明。
  *
- * <p>队列：vod.procedure，使用直连交换机 vod.direct，绑定键相同。
- * Worker 在第 09 步实现消费。
+ * <p>队列：
+ * <ul>
+ *   <li>{@code vod.procedure} — VIDEO 转码（FFmpeg）</li>
+ *   <li>{@code vod.document.split} — DOCUMENT 切章（与转码隔离）</li>
+ *   <li>{@code vod.image.thumbnail} — IMAGE 缩略图（与转码隔离）</li>
+ * </ul>
+ * 交换机均为直连 {@code vod.direct}。失败延迟重试见 {@link ProcedureRetry}（仅 procedure）。
  */
 @Configuration
 public class RabbitConfig {
@@ -24,9 +29,25 @@ public class RabbitConfig {
     public static final String EXCHANGE_NAME = "vod.direct";
     public static final String ROUTING_KEY = "vod.procedure";
 
+    public static final String DOCUMENT_SPLIT_QUEUE = "vod.document.split";
+    public static final String DOCUMENT_SPLIT_ROUTING_KEY = "vod.document.split";
+
+    public static final String IMAGE_THUMBNAIL_QUEUE = "vod.image.thumbnail";
+    public static final String IMAGE_THUMBNAIL_ROUTING_KEY = "vod.image.thumbnail";
+
     @Bean
     public Queue procedureQueue() {
         return new Queue(QUEUE_NAME, true);
+    }
+
+    @Bean
+    public Queue documentSplitQueue() {
+        return new Queue(DOCUMENT_SPLIT_QUEUE, true);
+    }
+
+    @Bean
+    public Queue imageThumbnailQueue() {
+        return new Queue(IMAGE_THUMBNAIL_QUEUE, true);
     }
 
     @Bean
@@ -39,6 +60,20 @@ public class RabbitConfig {
         return BindingBuilder.bind(procedureQueue)
                 .to(vodDirectExchange)
                 .with(ROUTING_KEY);
+    }
+
+    @Bean
+    public Binding documentSplitBinding(Queue documentSplitQueue, DirectExchange vodDirectExchange) {
+        return BindingBuilder.bind(documentSplitQueue)
+                .to(vodDirectExchange)
+                .with(DOCUMENT_SPLIT_ROUTING_KEY);
+    }
+
+    @Bean
+    public Binding imageThumbnailBinding(Queue imageThumbnailQueue, DirectExchange vodDirectExchange) {
+        return BindingBuilder.bind(imageThumbnailQueue)
+                .to(vodDirectExchange)
+                .with(IMAGE_THUMBNAIL_ROUTING_KEY);
     }
 
     /**

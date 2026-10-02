@@ -35,3 +35,20 @@ CREATE TABLE IF NOT EXISTS media_task (
     KEY idx_media_task_media_id (media_id),
     KEY idx_media_task_file_id (file_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='媒资处理任务';
+
+CREATE TABLE IF NOT EXISTS procedure_dead_letter (
+    id               BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    task_id          BIGINT       NOT NULL COMMENT 'media_task.id，一任务一行',
+    media_id         BIGINT       NOT NULL COMMENT 'media.id',
+    file_id          VARCHAR(64)  NOT NULL COMMENT '媒资 fileId',
+    object_key       VARCHAR(512) NOT NULL COMMENT '原始对象键，重放消息用',
+    task_type        VARCHAR(16)  NOT NULL COMMENT 'FULL / FAST / LADDER',
+    progressive      TINYINT      NOT NULL DEFAULT 0 COMMENT '1 表示渐进式',
+    preview_seconds  INT                   DEFAULT NULL COMMENT '试看秒数',
+    attempt          INT          NOT NULL COMMENT '停放时的尝试次数',
+    error_msg        VARCHAR(512)          DEFAULT NULL COMMENT '失败原因',
+    created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '落入死信的时间',
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_dead_task_id (task_id),
+    KEY idx_dead_file_id (file_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='转码死信，与队列 vod.procedure.dlq 成对';

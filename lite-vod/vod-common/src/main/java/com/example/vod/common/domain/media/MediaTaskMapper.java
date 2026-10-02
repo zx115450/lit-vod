@@ -20,16 +20,16 @@ import java.util.List;
 @Mapper
 public interface MediaTaskMapper {
 
-    @Select("SELECT id, media_id, file_id, type, status, attempt, error_msg, created_at, finished_at " +
+    @Select("SELECT id, media_id, file_id, type, status, attempt, payload, error_msg, created_at, finished_at " +
             "FROM media_task WHERE id = #{id}")
     MediaTask findById(Long id);
 
-    @Select("SELECT id, media_id, file_id, type, status, attempt, error_msg, created_at, finished_at " +
+    @Select("SELECT id, media_id, file_id, type, status, attempt, payload, error_msg, created_at, finished_at " +
             "FROM media_task WHERE media_id = #{mediaId} AND status IN (0, 1)")
     List<MediaTask> findPendingByMediaId(Long mediaId);
 
-    @Insert("INSERT INTO media_task (media_id, file_id, type, status, attempt) " +
-            "VALUES (#{mediaId}, #{fileId}, #{type}, #{status}, #{attempt})")
+    @Insert("INSERT INTO media_task (media_id, file_id, type, status, attempt, payload) " +
+            "VALUES (#{mediaId}, #{fileId}, #{type}, #{status}, #{attempt}, #{payload})")
     @Options(useGeneratedKeys = true, keyProperty = "id", keyColumn = "id")
     void insert(MediaTask task);
 

@@ -16,8 +16,21 @@ public class Media {
 
     private Long id;
     private String fileId;
+    /** 资产类型，缺省 VIDEO。 */
+    private AssetType assetType;
     private String objectKey;
     private String filename;
+    private String mimeType;
+    /** CHAPTER 挂 DOCUMENT；字幕挂 VIDEO。 */
+    private String parentFileId;
+    /** CHAPTER 序号，从 1 起。 */
+    private Integer chapterNo;
+    /**
+     * 文档页数；CHAPTER 行 MVP 复用为 {@code wordCount}（章正文 Unicode 码点数）。
+     */
+    private Integer pageCount;
+    /** PDF 抽取文本对象键。 */
+    private String extractKey;
     private String mediaUrl;
     private String coverUrl;
     private Float duration;

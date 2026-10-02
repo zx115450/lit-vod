@@ -9,6 +9,7 @@ import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.PartEtag;
 import com.example.vod.controller.dto.PartUrl;
 import com.example.vod.controller.dto.UploadSignatureResponse;
+import com.example.vod.common.domain.media.AssetType;
 import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
@@ -45,11 +46,29 @@ public class UploadSignatureService {
 
     @Transactional
     public UploadSignatureResponse create() {
+        return create(AssetType.VIDEO);
+    }
+
+    /**
+     * 申请直传凭证并落库 UPLOADING。
+     *
+     * @param assetType 资产类型；缺省 VIDEO；CHAPTER 不可经上传创建
+     */
+    @Transactional
+    public UploadSignatureResponse create(AssetType assetType) {
+        AssetType type = assetType != null ? assetType : AssetType.VIDEO;
+        if (!type.uploadable()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "assetType " + type + " cannot be created via upload; CHAPTER is produced by split worker");
+        }
+
         String fileId = IdGenerator.fileId();
-        String objectKey = ObjectKeys.raw(fileId);
+        String objectKey = ObjectKeys.raw(fileId, type.defaultExtension());
 
         Media media = new Media();
         media.setFileId(fileId);
+        media.setAssetType(type);
+        media.setMimeType(type.defaultMimeType());
         media.setObjectKey(objectKey);
         media.setStatus(MediaStatus.UPLOADING);
         mediaMapper.insert(media);
@@ -86,10 +105,15 @@ public class UploadSignatureService {
         }
 
         String fileId = IdGenerator.fileId();
-        String objectKey = ObjectKeys.raw(fileId);
+        AssetType type = AssetType.VIDEO;
+        String objectKey = ObjectKeys.raw(fileId, type.defaultExtension());
 
         Media media = new Media();
         media.setFileId(fileId);
+        media.setAssetType(type);
+        media.setMimeType(request.contentType() != null && !request.contentType().isBlank()
+                ? request.contentType()
+                : type.defaultMimeType());
         media.setObjectKey(objectKey);
         media.setStatus(MediaStatus.UPLOADING);
         mediaMapper.insert(media);

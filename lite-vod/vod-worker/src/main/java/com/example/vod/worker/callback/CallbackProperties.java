@@ -6,6 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * Webhook 回调配置（步骤 13 方案 A）。
  *
  * <p>{@code url} 为空时不发回调，便于本地只跑转码不接业务。
+ * <p>{@code authToken} 非空时作为 {@code X-Internal-Token} 发送，供书城校验。
  *
  * @param url              业务回调地址，环境变量 {@code VOD_CALLBACK_URL}
  * @param connectTimeoutMs 连接超时（毫秒）
@@ -15,6 +16,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
  * @param poolMaxSize      回调线程池最大线程数
  * @param queueCapacity    有界队列容量，满则拒绝并打日志（不阻塞消费线程）
  * @param keepAliveSeconds 非核心线程空闲回收秒数
+ * @param authToken        可选鉴权 Token，环境变量 {@code VOD_CALLBACK_AUTH_TOKEN}
  */
 @ConfigurationProperties(prefix = "vod.callback")
 public record CallbackProperties(
@@ -25,19 +27,29 @@ public record CallbackProperties(
         int poolCoreSize,
         int poolMaxSize,
         int queueCapacity,
-        int keepAliveSeconds
+        int keepAliveSeconds,
+        String authToken
 ) {
     public CallbackProperties() {
-        this("", 2000, 3000, 3, 1, 2, 200, 60);
+        this("", 2000, 3000, 3, 1, 2, 200, 60, "");
     }
 
     /** 测试 / 手工构造时补齐线程池默认值。 */
     public static CallbackProperties of(String url, int connectTimeoutMs, int readTimeoutMs, int maxAttempts) {
-        return new CallbackProperties(url, connectTimeoutMs, readTimeoutMs, maxAttempts, 1, 2, 200, 60);
+        return new CallbackProperties(url, connectTimeoutMs, readTimeoutMs, maxAttempts, 1, 2, 200, 60, "");
+    }
+
+    public static CallbackProperties of(String url, int connectTimeoutMs, int readTimeoutMs, int maxAttempts,
+                                        String authToken) {
+        return new CallbackProperties(url, connectTimeoutMs, readTimeoutMs, maxAttempts, 1, 2, 200, 60, authToken);
     }
 
     public boolean enabled() {
         return url != null && !url.isBlank();
+    }
+
+    public boolean hasAuthToken() {
+        return authToken != null && !authToken.isBlank();
     }
 
     public int connectTimeoutMs() {

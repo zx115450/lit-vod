@@ -11,6 +11,7 @@ import com.example.vod.controller.dto.PartEtag;
 import com.example.vod.controller.dto.PartUrl;
 import com.example.vod.controller.dto.PlaySignatureResponse;
 import com.example.vod.controller.dto.UploadSignatureResponse;
+import com.example.vod.common.domain.media.AssetType;
 import com.example.vod.common.domain.media.MediaStatus;
 import com.example.vod.service.MediaService;
 import com.example.vod.service.PlaySignatureService;
@@ -55,6 +56,9 @@ class MediaControllerTest {
     @MockBean
     private PlaySignatureService playSignatureService;
 
+    @MockBean
+    private com.example.vod.service.ObjectSignatureService objectSignatureService;
+
     // PlayGatewayFilter / PlayPlaylistController 依赖，@WebMvcTest 会装载，需一并 mock
     @MockBean
     private com.example.vod.service.PlayAuthService playAuthService;
@@ -67,7 +71,7 @@ class MediaControllerTest {
 
     @Test
     void uploadSignatureShouldReturnDto() throws Exception {
-        when(uploadSignatureService.create()).thenReturn(
+        when(uploadSignatureService.create(AssetType.VIDEO)).thenReturn(
                 new UploadSignatureResponse(
                         "f7c2a1b0e9d84f6a",
                         "http://localhost:9000/vod/raw/f7c2a1b0e9d84f6a/source.mp4?X-Amz-Algorithm=...",
@@ -82,6 +86,28 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.uploadUrl").isString())
                 .andExpect(jsonPath("$.objectKey").value("raw/f7c2a1b0e9d84f6a/source.mp4"))
                 .andExpect(jsonPath("$.expireAt").value(1710000000));
+    }
+
+    @Test
+    void uploadSignatureWithDocumentAssetTypeShouldDelegate() throws Exception {
+        when(uploadSignatureService.create(AssetType.DOCUMENT)).thenReturn(
+                new UploadSignatureResponse(
+                        "docfileid00000000000000000000001",
+                        "http://localhost:9000/vod/raw/doc/source.bin?X-Amz-Algorithm=...",
+                        "raw/docfileid00000000000000000000001/source.bin",
+                        1710000000L
+                )
+        );
+
+        mockMvc.perform(get("/vod/signature/upload").param("assetType", "DOCUMENT"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.objectKey").value("raw/docfileid00000000000000000000001/source.bin"));
+    }
+
+    @Test
+    void uploadSignatureWithInvalidAssetTypeShouldReturn400() throws Exception {
+        mockMvc.perform(get("/vod/signature/upload").param("assetType", "UNKNOWN"))
+                .andExpect(status().isBadRequest());
     }
 
     @Test
@@ -140,7 +166,7 @@ class MediaControllerTest {
 
     @Test
     void commitMediaShouldReturnDto() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any(), any(), any(), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -152,31 +178,44 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.status").value("PROCESSING"))
                 .andExpect(jsonPath("$.statusText").value("处理中"));
 
-        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, null);
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, null, null, null);
     }
 
     @Test
     void commitMediaShouldPassProgressiveFlag() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any(), any(), any(), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fileId\":\"f7c2a1b0e9d84f6a\",\"filename\":\"lesson01.mp4\",\"progressive\":true}"))
                 .andExpect(status().isOk());
 
-        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", true, null);
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", true, null, null, null);
     }
 
     @Test
     void commitMediaShouldPassPreviewSeconds() throws Exception {
-        when(mediaService.commit(any(String.class), any(String.class), any(), any())).thenReturn(sampleMediaDto());
+        when(mediaService.commit(any(String.class), any(String.class), any(), any(), any(), any())).thenReturn(sampleMediaDto());
 
         mockMvc.perform(post("/vod/medias")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"fileId\":\"f7c2a1b0e9d84f6a\",\"filename\":\"lesson01.mp4\",\"previewSeconds\":120}"))
                 .andExpect(status().isOk());
 
-        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, 120);
+        verify(mediaService).commit("f7c2a1b0e9d84f6a", "lesson01.mp4", null, 120, null, null);
+    }
+
+    @Test
+    void commitMediaShouldPassDocumentAssetTypeAndSplitRule() throws Exception {
+        when(mediaService.commit(any(String.class), any(String.class), any(), any(), any(), any())).thenReturn(sampleMediaDto());
+
+        mockMvc.perform(post("/vod/medias")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"fileId\":\"doc1\",\"filename\":\"redis.md\",\"assetType\":\"DOCUMENT\",\"splitRule\":\"MARKDOWN\"}"))
+                .andExpect(status().isOk());
+
+        verify(mediaService).commit("doc1", "redis.md", null, null,
+                AssetType.DOCUMENT, com.example.vod.common.domain.media.SplitRule.MARKDOWN);
     }
 
     @Test
@@ -188,6 +227,43 @@ class MediaControllerTest {
                 .andExpect(jsonPath("$.fileId").value("f7c2a1b0e9d84f6a"))
                 .andExpect(jsonPath("$.statusText").value("处理中"))
                 .andExpect(jsonPath("$.objectKey").value("raw/f7c2a1b0e9d84f6a/source.mp4"));
+    }
+
+    @Test
+    void chaptersShouldReturnOrderedList() throws Exception {
+        when(mediaService.listChapters("doc-source-1")).thenReturn(
+                new com.example.vod.controller.dto.ChaptersResponse(
+                        "doc-source-1",
+                        List.of(
+                                new com.example.vod.controller.dto.ChapterDto(
+                                        1, "持久化", "chap-1", 120, AssetType.CHAPTER),
+                                new com.example.vod.controller.dto.ChapterDto(
+                                        2, "复制", "chap-2", 80, AssetType.CHAPTER)
+                        )
+                )
+        );
+
+        mockMvc.perform(get("/vod/medias/doc-source-1/chapters"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.sourceFileId").value("doc-source-1"))
+                .andExpect(jsonPath("$.chapters.length()").value(2))
+                .andExpect(jsonPath("$.chapters[0].chapterNo").value(1))
+                .andExpect(jsonPath("$.chapters[0].title").value("持久化"))
+                .andExpect(jsonPath("$.chapters[0].fileId").value("chap-1"))
+                .andExpect(jsonPath("$.chapters[0].wordCount").value(120))
+                .andExpect(jsonPath("$.chapters[0].assetType").value("CHAPTER"))
+                .andExpect(jsonPath("$.chapters[1].chapterNo").value(2));
+    }
+
+    @Test
+    void chaptersShouldReturnEmptyWhileProcessing() throws Exception {
+        when(mediaService.listChapters("doc-processing")).thenReturn(
+                new com.example.vod.controller.dto.ChaptersResponse("doc-processing", List.of())
+        );
+
+        mockMvc.perform(get("/vod/medias/doc-processing/chapters"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.chapters.length()").value(0));
     }
 
     @Test
@@ -256,6 +332,27 @@ class MediaControllerTest {
     }
 
     @Test
+    void objectSignatureShouldReturnDto() throws Exception {
+        when(objectSignatureService.sign("chap-1", 60)).thenReturn(
+                new com.example.vod.controller.dto.ObjectSignatureResponse(
+                        "chap-1",
+                        "http://minio/vod/chap/s/001.md?sig=1",
+                        "chap/s/001.md",
+                        AssetType.CHAPTER,
+                        1710000060L
+                )
+        );
+
+        mockMvc.perform(get("/vod/signature/object")
+                        .param("fileId", "chap-1")
+                        .param("ttl", "60"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fileId").value("chap-1"))
+                .andExpect(jsonPath("$.objectUrl").value("http://minio/vod/chap/s/001.md?sig=1"))
+                .andExpect(jsonPath("$.assetType").value("CHAPTER"));
+    }
+
+    @Test
     void deleteShouldReturn204WhenMediaFinished() throws Exception {
         doNothing().when(mediaService).delete("f7c2a1b0e9d84f6a");
 
@@ -285,8 +382,13 @@ class MediaControllerTest {
         return new MediaDto(
                 1L,
                 "f7c2a1b0e9d84f6a",
+                AssetType.VIDEO,
                 "raw/f7c2a1b0e9d84f6a/source.mp4",
                 "lesson01.mp4",
+                "video/mp4",
+                null,
+                null,
+                null,
                 null,
                 null,
                 null,

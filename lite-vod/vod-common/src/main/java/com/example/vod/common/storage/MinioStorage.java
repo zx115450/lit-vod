@@ -88,6 +88,27 @@ public class MinioStorage {
         }
     }
 
+    /**
+     * 签发限时 GET URL，调用方直打 MinIO，字节不过业务进程。
+     *
+     * <p>expiry 钳制在 1 秒～2 小时（与 {@link #presignedPut} 上限一致）。
+     */
+    public String presignedGet(String objectKey, Duration expiry) {
+        try {
+            long raw = expiry == null ? 60L : expiry.toSeconds();
+            int seconds = (int) Math.max(1, Math.min(raw, TimeUnit.HOURS.toSeconds(2)));
+            return presignClient.getPresignedObjectUrl(
+                    GetPresignedObjectUrlArgs.builder()
+                            .method(Method.GET)
+                            .bucket(props.bucket())
+                            .object(objectKey)
+                            .expiry(seconds, TimeUnit.SECONDS)
+                            .build());
+        } catch (Exception e) {
+            throw new IllegalStateException("presigned get failed: " + objectKey, e);
+        }
+    }
+
     // ==================== Multipart（二期） ====================
 
     /**

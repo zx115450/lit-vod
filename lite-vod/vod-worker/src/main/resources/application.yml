@@ -1,5 +1,5 @@
 server:
-  port: 8081
+  port: 8082
 
 spring:
   application:
@@ -20,11 +20,11 @@ spring:
     password: ${RABBITMQ_PASSWORD:1234}
     listener:
       simple:
-        # 手动 ack：消费成功 / 永久失败才 ack，否则 requeue 让 MQ 重投
+        # 手动 ack：成功、延迟重试入队、死信落库并入队之后才 ack
         acknowledge-mode: manual
         # 每 Worker 容器并发 1~2，避免 CPU 打满拖垮同机 API
         concurrency: ${WORKER_CONCURRENCY:1}
-        # 单条消息处理失败时先 requeue 给 MQ 重试
+        # 监听器未 ack 就抛异常时立即重投，只兜底「延迟入队失败」
         default-requeue-rejected: true
 
 minio:
@@ -68,9 +68,11 @@ vod:
     l2-enabled: ${VOD_PREVIEW_L2_ENABLED:false}
     seconds: ${VOD_PREVIEW_SECONDS:30}
     max-seconds: ${VOD_PREVIEW_MAX_SECONDS:1800}
-  # 步骤 13 Webhook：为空则跳过；演示可指向 vod-api 的 /vod/callback/test
+  # 步骤 13 Webhook：为空则跳过；书城切章回调示例 http://host.docker.internal:8081/api/internal/media/callback
   callback:
     url: ${VOD_CALLBACK_URL:}
+    # 与书城 BOOKSTORE_MEDIA_TOKEN / 媒资 VOD_INTERNAL_TOKEN 对齐
+    auth-token: ${VOD_CALLBACK_AUTH_TOKEN:${VOD_INTERNAL_TOKEN:}}
     connect-timeout-ms: ${VOD_CALLBACK_CONNECT_TIMEOUT_MS:2000}
     read-timeout-ms: ${VOD_CALLBACK_READ_TIMEOUT_MS:3000}
     max-attempts: ${VOD_CALLBACK_MAX_ATTEMPTS:3}

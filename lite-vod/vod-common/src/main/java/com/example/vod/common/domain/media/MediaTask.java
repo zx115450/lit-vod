@@ -20,6 +20,8 @@ public class MediaTask {
     private MediaTaskType type;
     private MediaTaskStatus status;
     private Integer attempt;
+    /** 任务扩展 JSON，如 {@code {"splitRule":"MARKDOWN"}}，供 L2/L3 Worker 读取。 */
+    private String payload;
     private String errorMsg;
     private LocalDateTime createdAt;
     private LocalDateTime finishedAt;

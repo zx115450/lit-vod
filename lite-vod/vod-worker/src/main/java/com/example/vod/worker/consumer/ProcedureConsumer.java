@@ -11,10 +11,13 @@ import com.example.vod.common.domain.media.MediaTask;
 import com.example.vod.common.domain.media.LadderStatus;
 import com.example.vod.common.domain.media.MediaTaskMapper;
 import com.example.vod.common.domain.media.MediaTaskStatus;
+import com.example.vod.common.domain.media.ProcedureDeadLetter;
+import com.example.vod.common.domain.media.ProcedureDeadLetterMapper;
 import com.example.vod.common.domain.media.MediaTaskType;
 import com.example.vod.worker.ffmpeg.FfmpegService;
 import com.example.vod.worker.ffmpeg.PreviewPlaylistBuilder;
 import com.example.vod.worker.ffmpeg.TranscodeException;
+import com.example.vod.common.messaging.ProcedureRetry;
 import com.example.vod.common.messaging.ProcedureTaskMessage;
 import com.example.vod.worker.process.CommandTimeoutException;
 import com.example.vod.common.storage.MinioStorage;
@@ -58,6 +61,7 @@ public class ProcedureConsumer {
 
     private final MediaMapper mediaMapper;
     private final MediaTaskMapper mediaTaskMapper;
+    private final ProcedureDeadLetterMapper deadLetterMapper;
     private final MinioStorage minioStorage;
     private final FfmpegService ffmpegService;
     private final WorkerProperties props;
@@ -68,6 +72,7 @@ public class ProcedureConsumer {
 
     public ProcedureConsumer(MediaMapper mediaMapper,
                              MediaTaskMapper mediaTaskMapper,
+                             ProcedureDeadLetterMapper deadLetterMapper,
                              MinioStorage minioStorage,
                              FfmpegService ffmpegService,
                              WorkerProperties props,
@@ -77,6 +82,7 @@ public class ProcedureConsumer {
                              RabbitTemplate rabbitTemplate) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
+        this.deadLetterMapper = deadLetterMapper;
         this.minioStorage = minioStorage;
         this.ffmpegService = ffmpegService;
         this.props = props;
@@ -115,10 +121,13 @@ public class ProcedureConsumer {
             double duration = ffmpegService.probeDuration(workDir);
             if (duration > props.maxDurationSec()) {
                 String msg = String.format("duration %.0fs exceeds limit %ds", duration, props.maxDurationSec());
-                log.warn("duration over limit, mark FAILED without retry: fileId={} {}", fileId, msg);
+                log.warn("duration over limit, park dead letter without retry: fileId={} {}", fileId, msg);
                 failTaskAndMedia(taskId, fileId, msg);
-                callbackNotifier.notifyAsync(CallbackPayload.failed(fileId, msg));
-                ack(channel, deliveryTag);
+                try {
+                    parkPoison(message, attempt, msg, channel, deliveryTag);
+                } catch (Exception parkError) {
+                    throw new DeadLetterParkException(parkError);
+                }
                 return;
             }
 
@@ -129,8 +138,10 @@ public class ProcedureConsumer {
                 case LADDER -> doLadder(message, workDir, duration, startTime, channel, deliveryTag);
                 default -> doFull(message, workDir, duration, startTime, channel, deliveryTag);
             }
+        } catch (DeadLetterParkException e) {
+            throw e;
         } catch (Exception e) {
-            handleFailure(taskId, fileId, attempt, e, channel, deliveryTag);
+            handleFailure(message, attempt, e, channel, deliveryTag);
         } finally {
             cleanup(workDir);
         }
@@ -385,8 +396,15 @@ public class ProcedureConsumer {
         }
     }
 
-    private void handleFailure(Long taskId, String fileId, int attempt, Throwable cause,
+    /**
+     * 可重试失败：ack 掉原消息，再投到 attempt×5 秒的等待队列，到期死信回业务队列。
+     * 次数用尽：先落 procedure_dead_letter，再把原消息送进 vod.procedure.dlq，然后 ack。
+     * 落库或死信投递失败时不 ack，交给监听器按 default-requeue-rejected 立即重投。
+     */
+    private void handleFailure(ProcedureTaskMessage message, int attempt, Throwable cause,
                                Channel channel, long deliveryTag) throws IOException {
+        String fileId = message.fileId();
+        Long taskId = message.taskId();
         String errorMsg = summarize(cause);
         log.error("task failed fileId={} taskId={} attempt={}/{}: {}",
                 fileId, taskId, attempt, props.maxAttempts(), errorMsg, cause);
@@ -395,13 +413,41 @@ public class ProcedureConsumer {
 
         int effectiveAttempt = Math.max(attempt, 1);
         if (effectiveAttempt < props.maxAttempts()) {
-            log.info("requeue for retry fileId={} taskId={}", fileId, taskId);
-            channel.basicReject(deliveryTag, true);
-        } else {
-            log.warn("attempt exceeded, ack and stop (poison message): fileId={} taskId={}", fileId, taskId);
-            callbackNotifier.notifyAsync(CallbackPayload.failed(fileId, errorMsg));
+            int delayMs = ProcedureRetry.delayMillis(effectiveAttempt);
+            log.info("delay retry fileId={} taskId={} attempt={} delayMs={}",
+                    fileId, taskId, effectiveAttempt, delayMs);
+            rabbitTemplate.convertAndSend(
+                    ProcedureRetry.EXCHANGE_NAME,
+                    ProcedureRetry.routingKey(effectiveAttempt),
+                    message);
             ack(channel, deliveryTag);
+        } else {
+            parkPoison(message, effectiveAttempt, errorMsg, channel, deliveryTag);
         }
+    }
+
+    /**
+     * 不可再重试：业务表已经是 FAILED。这里再写死信行，并把原始消息放进死信队列。
+     * 两步都成功后才 ack，避免消息从业务队列消失却没有留下记录。
+     */
+    private void parkPoison(ProcedureTaskMessage message, int attempt, String errorMsg,
+                            Channel channel, long deliveryTag) throws IOException {
+        ProcedureDeadLetter row = new ProcedureDeadLetter();
+        row.setTaskId(message.taskId());
+        row.setMediaId(message.mediaId());
+        row.setFileId(message.fileId());
+        row.setObjectKey(message.objectKey());
+        row.setTaskType(message.taskType().name());
+        row.setProgressive(message.isProgressive() ? 1 : 0);
+        row.setPreviewSeconds(message.previewSeconds());
+        row.setAttempt(Math.max(attempt, 1));
+        row.setErrorMsg(CommandTimeoutException.truncate(errorMsg, ERROR_MSG_MAX));
+        deadLetterMapper.upsert(row);
+
+        log.warn("park dead letter fileId={} taskId={} attempt={}", message.fileId(), message.taskId(), row.getAttempt());
+        rabbitTemplate.convertAndSend(ProcedureRetry.DEAD_EXCHANGE, ProcedureRetry.DLQ_ROUTING_KEY, message);
+        callbackNotifier.notifyAsync(CallbackPayload.failed(message.fileId(), errorMsg));
+        ack(channel, deliveryTag);
     }
 
     private void failTaskAndMedia(Long taskId, String fileId, String rawErrorMsg) {
@@ -419,6 +465,15 @@ public class ProcedureConsumer {
         }
         String msg = e.getMessage();
         return msg == null ? e.getClass().getSimpleName() : msg;
+    }
+
+    /**
+     * 时长超限已经决定停放。停放失败时不要再走可重试失败，否则会把坏片重新投回等待队列。
+     */
+    private static final class DeadLetterParkException extends RuntimeException {
+        private DeadLetterParkException(Throwable cause) {
+            super(cause);
+        }
     }
 
     private static void ack(Channel channel, long deliveryTag) throws IOException {

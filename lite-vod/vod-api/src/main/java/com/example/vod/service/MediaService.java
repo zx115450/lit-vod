@@ -1,22 +1,20 @@
 package com.example.vod.service;
 
-import com.example.vod.common.config.AbrProperties;
-import com.example.vod.common.config.PreviewProperties;
-import com.example.vod.common.domain.media.LadderStatus;
-import com.example.vod.common.messaging.RabbitConfig;
-import com.example.vod.controller.dto.MediaDto;
-import com.example.vod.controller.dto.PageResult;
+import com.example.vod.common.domain.media.AssetType;
 import com.example.vod.common.domain.media.Media;
 import com.example.vod.common.domain.media.MediaMapper;
 import com.example.vod.common.domain.media.MediaStatus;
-import com.example.vod.common.domain.media.MediaTask;
 import com.example.vod.common.domain.media.MediaTaskMapper;
-import com.example.vod.common.domain.media.MediaTaskStatus;
-import com.example.vod.common.domain.media.MediaTaskType;
-import com.example.vod.common.messaging.ProcedureTaskMessage;
+import com.example.vod.common.domain.media.ProcedureDeadLetterMapper;
+import com.example.vod.common.domain.media.SplitRule;
 import com.example.vod.common.storage.MinioStorage;
 import com.example.vod.common.storage.ObjectKeys;
-import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import com.example.vod.controller.dto.ChapterDto;
+import com.example.vod.controller.dto.ChaptersResponse;
+import com.example.vod.controller.dto.MediaDto;
+import com.example.vod.controller.dto.PageResult;
+import com.example.vod.service.commit.CommitContext;
+import com.example.vod.service.commit.CommitStrategyRegistry;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -32,46 +30,53 @@ public class MediaService {
 
     private final MediaMapper mediaMapper;
     private final MediaTaskMapper mediaTaskMapper;
+    private final ProcedureDeadLetterMapper deadLetterMapper;
     private final MinioStorage minioStorage;
-    private final RabbitTemplate rabbitTemplate;
-    private final AbrProperties abrProperties;
-    private final PreviewProperties previewProperties;
+    private final CommitStrategyRegistry commitStrategyRegistry;
 
     public MediaService(MediaMapper mediaMapper,
                         MediaTaskMapper mediaTaskMapper,
+                        ProcedureDeadLetterMapper deadLetterMapper,
                         MinioStorage minioStorage,
-                        RabbitTemplate rabbitTemplate,
-                        AbrProperties abrProperties,
-                        PreviewProperties previewProperties) {
+                        CommitStrategyRegistry commitStrategyRegistry) {
         this.mediaMapper = mediaMapper;
         this.mediaTaskMapper = mediaTaskMapper;
+        this.deadLetterMapper = deadLetterMapper;
         this.minioStorage = minioStorage;
-        this.rabbitTemplate = rabbitTemplate;
-        this.abrProperties = abrProperties;
-        this.previewProperties = previewProperties;
+        this.commitStrategyRegistry = commitStrategyRegistry;
     }
 
     @Transactional
     public MediaDto commit(String fileId, String filename) {
-        return commit(fileId, filename, null, null);
+        return commit(fileId, filename, null, null, null, null);
     }
 
     @Transactional
     public MediaDto commit(String fileId, String filename, Boolean progressiveOverride) {
-        return commit(fileId, filename, progressiveOverride, null);
+        return commit(fileId, filename, progressiveOverride, null, null, null);
     }
 
-    /**
-     * @param progressiveOverride    {@code null} 用配置；非空则按请求决定渐进式 / 一次出齐
-     * @param previewSecondsOverride {@code null} 用 {@code vod.preview.seconds}；{@code <=0} 不生成试看
-     */
     @Transactional
     public MediaDto commit(String fileId, String filename, Boolean progressiveOverride,
                            Integer previewSecondsOverride) {
+        return commit(fileId, filename, progressiveOverride, previewSecondsOverride, null, null);
+    }
+
+    /**
+     * 确认直传完成，按 {@link AssetType} 经策略注册表分流建任务。
+     *
+     * @param progressiveOverride    {@code null} 用配置；仅 VIDEO 有效
+     * @param previewSecondsOverride {@code null} 用配置；仅 VIDEO 有效
+     * @param requestAssetType       请求体可选；非空时须与库中一致
+     * @param splitRule              仅 DOCUMENT 有效；缺省 {@link SplitRule#MARKDOWN}
+     */
+    @Transactional
+    public MediaDto commit(String fileId, String filename, Boolean progressiveOverride,
+                           Integer previewSecondsOverride, AssetType requestAssetType,
+                           SplitRule splitRule) {
         Media media = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "media not found: " + fileId));
 
-        // 已可播或已完成的媒资直接幂等返回
         if (media.getStatus() == MediaStatus.FINISHED || media.getStatus() == MediaStatus.PLAYABLE) {
             return toDto(media);
         }
@@ -87,59 +92,25 @@ public class MediaService {
                     "file size exceeds limit: " + size);
         }
 
-        int previewSeconds = resolvePreviewSeconds(previewSecondsOverride);
-
-        // 已有未完结任务则不再重复建任务、不发消息
-        List<MediaTask> pendingTasks = mediaTaskMapper.findPendingByMediaId(media.getId());
-        if (!pendingTasks.isEmpty()) {
+        if (!mediaTaskMapper.findPendingByMediaId(media.getId()).isEmpty()) {
             Media latest = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                     .orElseThrow(() -> new IllegalStateException("media disappeared after commit: " + fileId));
             return toDto(latest);
         }
 
-        // 创建 media_task（PROCEDURE / PENDING）
-        MediaTask task = new MediaTask();
-        task.setMediaId(media.getId());
-        task.setFileId(fileId);
-        task.setType(MediaTaskType.PROCEDURE);
-        task.setStatus(MediaTaskStatus.PENDING);
-        task.setAttempt(0);
-        mediaTaskMapper.insert(task);
-
-        // 媒资进入处理中，并落盘上传方指定的试看秒数
-        mediaMapper.updateUploaded(fileId, filename, size, MediaStatus.PROCESSING, previewSeconds);
-
-        // 投递转码任务消息；发送失败时事务回滚，避免状态不一致
-        boolean progressive = progressiveOverride != null
-                ? progressiveOverride
-                : abrProperties.progressiveEnabled();
-        ProcedureTaskMessage.TaskType taskType = progressive
-                ? ProcedureTaskMessage.TaskType.FAST
-                : ProcedureTaskMessage.TaskType.FULL;
-        ProcedureTaskMessage message = new ProcedureTaskMessage(
-                fileId, media.getId(), media.getObjectKey(), task.getId(),
-                taskType, progressive, previewSeconds);
-        if (progressive) {
-            mediaMapper.updateLadderFinished(fileId, MediaStatus.PROCESSING, null, LadderStatus.PENDING.code());
+        AssetType stored = media.getAssetType() != null ? media.getAssetType() : AssetType.VIDEO;
+        if (requestAssetType != null && requestAssetType != stored) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "assetType mismatch: request=" + requestAssetType + ", stored=" + stored);
         }
-        rabbitTemplate.convertAndSend(RabbitConfig.EXCHANGE_NAME, RabbitConfig.ROUTING_KEY, message);
+
+        CommitContext ctx = new CommitContext(
+                media, filename, size, progressiveOverride, previewSecondsOverride, splitRule);
+        commitStrategyRegistry.get(stored).commit(ctx);
 
         Media updated = Optional.ofNullable(mediaMapper.findByFileId(fileId))
                 .orElseThrow(() -> new IllegalStateException("media disappeared after commit: " + fileId));
         return toDto(updated);
-    }
-
-    /**
-     * null → 配置默认；&lt;=0 → 0（不试看）；其余封顶到 maxSeconds。
-     */
-    int resolvePreviewSeconds(Integer override) {
-        if (override == null) {
-            return previewProperties.seconds();
-        }
-        if (override <= 0) {
-            return 0;
-        }
-        return Math.min(override, previewProperties.maxSeconds());
     }
 
     public MediaDto detail(String fileId) {
@@ -149,7 +120,25 @@ public class MediaService {
     }
 
     /**
-     * 步骤 14：删除媒资。
+     * DOCUMENT 章目录。父不存在 → 404；PROCESSING / FAILED / 无子章 → 200 + 空数组。
+     */
+    public ChaptersResponse listChapters(String sourceFileId) {
+        Media parent = Optional.ofNullable(mediaMapper.findByFileId(sourceFileId))
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND,
+                        "media not found: " + sourceFileId));
+        // 非 DOCUMENT 也可查询（无子章则空）；便于书城轮询时不区分状态
+        List<ChapterDto> chapters = mediaMapper.findChaptersByParentFileId(parent.getFileId()).stream()
+                .map(this::toChapterDto)
+                .toList();
+        return new ChaptersResponse(sourceFileId, chapters);
+    }
+
+    /**
+     * 删除媒资。VIDEO 仍按步骤 14：清 {@code raw/}、{@code hls/}、{@code cover/} 再删行。
+     * <p>DOCUMENT：先清 {@code chap/{fileId}/} 与全部子 CHAPTER 行（含其任务），再删原件与父行。
+     * 不查书城是否仍引用。
+     * <p>CHAPTER：允许单独删除（管理清理），只删该章对象与本行，不删父 DOCUMENT。
+     * <p>IMAGE：额外清 {@code img/{fileId}/}。处理中或仍有进行中任务 → 409。
      */
     @Transactional
     public void delete(String fileId) {
@@ -165,10 +154,37 @@ public class MediaService {
                     "media has running task, cannot delete: " + fileId);
         }
 
+        AssetType type = media.getAssetType() != null ? media.getAssetType() : AssetType.VIDEO;
+        List<Media> chapters = type == AssetType.DOCUMENT
+                ? mediaMapper.findChaptersByParentFileId(fileId)
+                : List.of();
+
+        // 对象先于库：任一步失败则不删行，避免库无记录但桶内残留
+        if (type == AssetType.DOCUMENT) {
+            minioStorage.removePrefix(ObjectKeys.chapterPrefix(fileId));
+        } else if (type == AssetType.IMAGE) {
+            minioStorage.removePrefix(ObjectKeys.imagePrefix(fileId));
+        } else if (type == AssetType.CHAPTER
+                && media.getObjectKey() != null
+                && !media.getObjectKey().isBlank()) {
+            minioStorage.removePrefix(media.getObjectKey());
+        }
         minioStorage.removePrefix(ObjectKeys.rawPrefix(fileId));
         minioStorage.removePrefix(ObjectKeys.hlsPrefix(fileId));
         minioStorage.removePrefix(ObjectKeys.cover(fileId));
 
+        for (Media chapter : chapters) {
+            if (chapter.getId() == null) {
+                continue;
+            }
+            deadLetterMapper.deleteByMediaId(chapter.getId());
+            mediaTaskMapper.deleteByMediaId(chapter.getId());
+        }
+        if (type == AssetType.DOCUMENT) {
+            mediaMapper.deleteByParentFileId(fileId);
+        }
+
+        deadLetterMapper.deleteByMediaId(media.getId());
         mediaTaskMapper.deleteByMediaId(media.getId());
         mediaMapper.deleteByFileId(fileId);
     }
@@ -198,11 +214,17 @@ public class MediaService {
     }
 
     private MediaDto toDto(Media media) {
+        AssetType assetType = media.getAssetType() != null ? media.getAssetType() : AssetType.VIDEO;
         return new MediaDto(
                 media.getId(),
                 media.getFileId(),
+                assetType,
                 media.getObjectKey(),
                 media.getFilename(),
+                media.getMimeType(),
+                media.getParentFileId(),
+                media.getChapterNo(),
+                media.getPageCount(),
                 media.getMediaUrl(),
                 media.getCoverUrl(),
                 media.getDuration(),
@@ -213,6 +235,18 @@ public class MediaService {
                 media.getErrorMsg(),
                 media.getCreateTime(),
                 media.getUpdateTime()
+        );
+    }
+
+    private ChapterDto toChapterDto(Media media) {
+        int wordCount = media.getPageCount() != null ? media.getPageCount() : 0;
+        String title = media.getFilename() != null ? media.getFilename() : "";
+        return new ChapterDto(
+                media.getChapterNo() != null ? media.getChapterNo() : 0,
+                title,
+                media.getFileId(),
+                wordCount,
+                AssetType.CHAPTER
         );
     }
 }

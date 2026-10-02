@@ -31,7 +31,13 @@ public final class ObjectKeys {
     }
 
     public static String raw(String fileId) {
-        return "raw/" + fileId + "/source.mp4";
+        return raw(fileId, "mp4");
+    }
+
+    /** 原件对象键：{@code raw/{fileId}/source.{ext}}。 */
+    public static String raw(String fileId, String ext) {
+        String safeExt = (ext == null || ext.isBlank()) ? "bin" : ext.replaceAll("^\\.+", "");
+        return "raw/" + fileId + "/source." + safeExt;
     }
 
     /** 单码率首期：根目录 index.m3u8。 */
@@ -79,5 +85,32 @@ public final class ObjectKeys {
 
     public static String hlsPrefix(String fileId) {
         return "hls/" + fileId + "/";
+    }
+
+    /**
+     * DOCUMENT 切章产物：{@code chap/{sourceFileId}/{nnn}.md}，序号三位从 001。
+     *
+     * @param chapterNo 从 1 起
+     */
+    public static String chapter(String sourceFileId, int chapterNo) {
+        return String.format("chap/%s/%03d.md", sourceFileId, chapterNo);
+    }
+
+    /** 某 DOCUMENT 下全部章对象前缀，失败回滚 / 重切时 {@code removePrefix}。 */
+    public static String chapterPrefix(String sourceFileId) {
+        return "chap/" + sourceFileId + "/";
+    }
+
+    /**
+     * IMAGE 缩略图：{@code img/{fileId}/cover.jpg}。
+     * 生成失败时 {@code object_key} 仍指向原图，不写此键。
+     */
+    public static String imageCover(String fileId) {
+        return "img/" + fileId + "/cover.jpg";
+    }
+
+    /** 某 IMAGE 的缩略图前缀，删除媒资时 {@code removePrefix}。 */
+    public static String imagePrefix(String fileId) {
+        return "img/" + fileId + "/";
     }
 }

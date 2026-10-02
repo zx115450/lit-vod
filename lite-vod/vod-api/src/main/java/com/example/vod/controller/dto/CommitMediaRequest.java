@@ -6,14 +6,17 @@ import jakarta.validation.constraints.NotBlank;
  * 确认上传请求。
  *
  * @param progressive     是否渐进式转码；{@code null} 时回退到 {@code vod.abr.progressive-enabled}。
- *                        {@code true}=先出低档可播再补档；{@code false}=一次出齐。
- * @param previewSeconds  试看秒数（上传方指定）；{@code null} 用 {@code vod.preview.seconds}；
- *                        {@code <=0} 表示不生成试看清单。
+ *                        仅 VIDEO 有效。
+ * @param previewSeconds  试看秒数；{@code null} 用配置；{@code <=0} 不生成试看。仅 VIDEO 有效。
+ * @param assetType       可选；须与上传时落库的类型一致；缺省以库中为准。
+ * @param splitRule       切章规则 {@code MARKDOWN}|{@code TXT_CHAPTER}；仅 DOCUMENT 有效。
  */
 public record CommitMediaRequest(
         @NotBlank String fileId,
         @NotBlank String filename,
         Boolean progressive,
-        Integer previewSeconds
+        Integer previewSeconds,
+        String assetType,
+        String splitRule
 ) {
 }

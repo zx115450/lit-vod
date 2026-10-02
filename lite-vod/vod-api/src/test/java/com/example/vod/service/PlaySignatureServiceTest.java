@@ -161,10 +161,37 @@ class PlaySignatureServiceTest {
         assertTrue(resp.playUrl().startsWith("http://localhost/hls/" + fileId + "/master.m3u8?"));
     }
 
+    @Test
+    void signShouldRejectNonVideoAssetType() {
+        String fileId = "doc-001";
+        Media media = finishedMedia(fileId, 30);
+        media.setAssetType(com.example.vod.common.domain.media.AssetType.DOCUMENT);
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media);
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+                () -> serviceL2Off.sign(fileId, false));
+        assertEquals(400, ex.getStatusCode().value());
+        assertTrue(ex.getReason().contains("play signature only for VIDEO"));
+    }
+
+    @Test
+    void signShouldRejectImage() {
+        String fileId = "img-001";
+        Media media = finishedMedia(fileId, 0);
+        media.setAssetType(com.example.vod.common.domain.media.AssetType.IMAGE);
+        media.setMediaUrl(null);
+        when(mediaMapper.findByFileId(fileId)).thenReturn(media);
+
+        ResponseStatusException ex = assertThrows(ResponseStatusException.class,
+                () -> serviceL2Off.sign(fileId, false));
+        assertEquals(400, ex.getStatusCode().value());
+    }
+
     private Media finishedMedia(String fileId, int previewSeconds) {
         Media media = new Media();
         media.setId(1L);
         media.setFileId(fileId);
+        media.setAssetType(com.example.vod.common.domain.media.AssetType.VIDEO);
         media.setObjectKey("raw/" + fileId + "/source.mp4");
         media.setStatus(MediaStatus.FINISHED);
         media.setMediaUrl("hls/" + fileId + "/index.m3u8");

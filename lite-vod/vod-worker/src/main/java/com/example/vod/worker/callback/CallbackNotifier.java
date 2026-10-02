@@ -26,6 +26,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 @Component
 public class CallbackNotifier {
 
+    public static final String INTERNAL_TOKEN_HEADER = "X-Internal-Token";
+
     private static final long RETRY_BACKOFF_MS = 500L;
 
     private final CallbackProperties props;
@@ -75,14 +77,17 @@ public class CallbackNotifier {
         int max = props.maxAttempts();
         for (int attempt = 1; attempt <= max; attempt++) {
             try {
-                restClient.post()
+                var spec = restClient.post()
                         .uri(props.url())
-                        .contentType(MediaType.APPLICATION_JSON)
-                        .body(payload)
+                        .contentType(MediaType.APPLICATION_JSON);
+                if (props.hasAuthToken()) {
+                    spec = spec.header(INTERNAL_TOKEN_HEADER, props.authToken());
+                }
+                spec.body(payload)
                         .retrieve()
                         .toBodilessEntity();
-                log.info("callback ok fileId={} status={} attempt={}/{}",
-                        payload.fileId(), payload.status(), attempt, max);
+                log.info("callback ok fileId={} status={} eventType={} attempt={}/{}",
+                        payload.fileId(), payload.status(), payload.eventType(), attempt, max);
                 return;
             } catch (Exception e) {
                 log.warn("callback failed fileId={} status={} attempt={}/{}: {}",

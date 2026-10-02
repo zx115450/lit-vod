@@ -2,6 +2,7 @@ package com.example.vod;
 
 import com.example.vod.common.config.AbrProperties;
 import com.example.vod.common.config.PreviewProperties;
+import com.example.vod.config.InternalProperties;
 import com.example.vod.config.PlaySignProperties;
 import com.example.vod.config.UploadProperties;
 import org.springframework.boot.SpringApplication;
@@ -22,7 +23,8 @@ import org.springframework.boot.context.properties.EnableConfigurationProperties
         PlaySignProperties.class,
         UploadProperties.class,
         AbrProperties.class,
-        PreviewProperties.class
+        PreviewProperties.class,
+        InternalProperties.class
 })
 public class VodApiApplication {
     public static void main(String[] args) {
