@@ -137,18 +137,18 @@ public class MinioStorage {
      */
     public String presignedUploadPart(String objectKey, String uploadId, int partNumber, Duration expiry) {
         try {
-            int seconds = (int) Math.max(60, Math.min(expiry.toSeconds(), TimeUnit.HOURS.toSeconds(2)));
-            Map<String, String> query = new HashMap<>();
-            query.put("uploadId", uploadId);
-            query.put("partNumber", String.valueOf(partNumber));
-            return presignClient.getPresignedObjectUrl(
-                    GetPresignedObjectUrlArgs.builder()
-                            .method(Method.PUT)
-                            .bucket(props.bucket())
-                            .object(objectKey)
-                            .expiry(seconds, TimeUnit.SECONDS)
-                            .extraQueryParams(query)
-                            .build());
+                int seconds = (int) Math.max(60, Math.min(expiry.toSeconds(), TimeUnit.HOURS.toSeconds(2)));
+                Map<String, String> query = new HashMap<>();
+                query.put("uploadId", uploadId);
+                query.put("partNumber", String.valueOf(partNumber));
+                return presignClient.getPresignedObjectUrl(
+                        GetPresignedObjectUrlArgs.builder()
+                                .method(Method.PUT)
+                                .bucket(props.bucket())
+                                .object(objectKey)
+                                .expiry(seconds, TimeUnit.SECONDS)
+                                .extraQueryParams(query)
+                                .build());
         } catch (Exception e) {
             throw new IllegalStateException("presign part failed: " + objectKey + " #" + partNumber, e);
         }

@@ -55,7 +55,7 @@ public class UploadSignatureService {
      * @param assetType 资产类型；缺省 VIDEO；CHAPTER 不可经上传创建
      */
     @Transactional
-    public UploadSignatureResponse create(AssetType assetType) {
+    public UploadSignatureResponse  create(AssetType assetType) {
         AssetType type = assetType != null ? assetType : AssetType.VIDEO;
         if (!type.uploadable()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
