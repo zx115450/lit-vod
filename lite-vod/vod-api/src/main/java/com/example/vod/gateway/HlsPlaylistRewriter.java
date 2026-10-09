@@ -5,6 +5,23 @@ package com.example.vod.gateway;
  *
  * <p>标准 HLS 相对路径不会自动继承 playlist 的 query，必须改写。
  */
+
+
+/*
+#EXTM3U
+#EXT-X-VERSION:3
+#EXTINF:4.000,
+segment_000.ts
+#EXTINF:4.000,
+segment_001.ts
+->
+#EXTM3U
+#EXT-X-VERSION:3
+#EXTINF:4.000,
+segment_000.ts?e=1&exper=0&sign=abc
+#EXTINF:4.000,
+segment_001.ts?e=1&exper=0&sign=abc
+ */
 public final class HlsPlaylistRewriter {
 
     private HlsPlaylistRewriter() {

@@ -110,6 +110,7 @@ public class MediaController {
     /**
      * 签发可播放 URL（HMAC-SHA256），对应步骤 10。
      * 仅可播媒资可签发；{@code preview=true} 时走试看（时长取媒资 previewSeconds，L2 绑 preview.m3u8）。
+     * <p>用途：本地 / debug。生产由书城调 {@code GET /internal/medias/{fileId}/play-url} + Internal-Token。
      */
     @GetMapping("/signature/play")
     public PlaySignatureResponse playSignature(

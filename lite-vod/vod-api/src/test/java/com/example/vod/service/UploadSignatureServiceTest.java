@@ -128,6 +128,25 @@ class UploadSignatureServiceTest {
         ArgumentCaptor<Media> captor = ArgumentCaptor.forClass(Media.class);
         verify(mediaMapper).insert(captor.capture());
         assertEquals(MediaStatus.UPLOADING, captor.getValue().getStatus());
+        assertEquals(AssetType.VIDEO, captor.getValue().getAssetType());
+    }
+
+    @Test
+    void createMultipartShouldRespectDocumentAssetType() {
+        long contentLength = 12L * 1024 * 1024;
+        long partSize = 10L * 1024 * 1024;
+        when(minioStorage.createMultipartUpload(anyString(), anyString())).thenReturn("upload-doc");
+        when(minioStorage.presignedUploadPart(anyString(), eq("upload-doc"), anyInt(), any(Duration.class)))
+                .thenReturn("http://minio/...");
+
+        MultipartUploadSignatureResponse resp = service.createMultipart(
+                new MultipartUploadRequest("book.md", "text/markdown", contentLength, partSize, "DOCUMENT"));
+
+        assertEquals("raw/" + resp.fileId() + "/source.bin", resp.objectKey());
+        ArgumentCaptor<Media> captor = ArgumentCaptor.forClass(Media.class);
+        verify(mediaMapper).insert(captor.capture());
+        assertEquals(AssetType.DOCUMENT, captor.getValue().getAssetType());
+        assertEquals("text/markdown", captor.getValue().getMimeType());
     }
 
     @Test

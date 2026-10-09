@@ -9,12 +9,14 @@ import com.example.vod.controller.dto.MultipartUploadRequest;
 import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.ObjectSignatureResponse;
 import com.example.vod.controller.dto.PartUrl;
+import com.example.vod.controller.dto.PlaySignatureResponse;
 import com.example.vod.controller.dto.UploadSignatureResponse;
 import com.example.vod.service.InternalTokenValidator;
 import com.example.vod.service.MediaService;
 import com.example.vod.service.ObjectSignatureService;
 import com.example.vod.service.PlayAuthService;
 import com.example.vod.service.PlayPlaylistService;
+import com.example.vod.service.PlaySignatureService;
 import com.example.vod.service.UploadSignatureService;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -51,6 +53,9 @@ class InternalMediaControllerTest {
 
     @MockBean
     private ObjectSignatureService objectSignatureService;
+
+    @MockBean
+    private PlaySignatureService playSignatureService;
 
     @MockBean
     private UploadSignatureService uploadSignatureService;
@@ -200,6 +205,40 @@ class InternalMediaControllerTest {
                 .andExpect(jsonPath("$.assetType").value("CHAPTER"));
 
         verify(tokenValidator).requireValid("tok");
+    }
+
+    @Test
+    void playUrlShouldRequireTokenAndReturnDto() throws Exception {
+        doNothing().when(tokenValidator).requireValid("tok");
+        when(playSignatureService.sign(eq("vid-1"), eq(true))).thenReturn(
+                new PlaySignatureResponse(
+                        "vid-1",
+                        "http://cdn/hls/vid-1/index.m3u8?e=1710000000&exper=300&sign=abc",
+                        "abc",
+                        1710000000L
+                )
+        );
+
+        mockMvc.perform(get("/internal/medias/vid-1/play-url")
+                        .param("preview", "true")
+                        .header(InternalTokenValidator.HEADER, "tok"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.fileId").value("vid-1"))
+                .andExpect(jsonPath("$.playUrl")
+                        .value("http://cdn/hls/vid-1/index.m3u8?e=1710000000&exper=300&sign=abc"))
+                .andExpect(jsonPath("$.signature").value("abc"));
+
+        verify(tokenValidator).requireValid("tok");
+        verify(playSignatureService).sign("vid-1", true);
+    }
+
+    @Test
+    void playUrlShouldReturn401WithoutToken() throws Exception {
+        doThrow(new ResponseStatusException(HttpStatus.UNAUTHORIZED, "invalid"))
+                .when(tokenValidator).requireValid(isNull());
+
+        mockMvc.perform(get("/internal/medias/vid-1/play-url").param("preview", "false"))
+                .andExpect(status().isUnauthorized());
     }
 
     @Test

@@ -9,10 +9,12 @@ import com.example.vod.controller.dto.MediaDto;
 import com.example.vod.controller.dto.MultipartUploadRequest;
 import com.example.vod.controller.dto.MultipartUploadSignatureResponse;
 import com.example.vod.controller.dto.ObjectSignatureResponse;
+import com.example.vod.controller.dto.PlaySignatureResponse;
 import com.example.vod.controller.dto.UploadSignatureResponse;
 import com.example.vod.service.InternalTokenValidator;
 import com.example.vod.service.MediaService;
 import com.example.vod.service.ObjectSignatureService;
+import com.example.vod.service.PlaySignatureService;
 import com.example.vod.service.UploadSignatureService;
 import jakarta.validation.Valid;
 import org.springframework.http.HttpStatus;
@@ -32,6 +34,7 @@ import org.springframework.web.server.ResponseStatusException;
  * <ul>
  *   <li>上传签发（整对象 / multipart）/ commit：书城管理端鉴权后调用</li>
  *   <li>object-url：书城读章鉴权后调用；字节由 BFF 直打 MinIO</li>
+ *   <li>play-url：书城播放鉴权后调用；返回带 HMAC 的 HLS playUrl 给浏览器</li>
  * </ul>
  *
  * <p>公开 {@code /vod/signature/*} 仍保留给本地 debug。不影响 {@code /internal/play-auth}。
@@ -42,15 +45,18 @@ public class InternalMediaController {
 
     private final InternalTokenValidator tokenValidator;
     private final ObjectSignatureService objectSignatureService;
+    private final PlaySignatureService playSignatureService;
     private final UploadSignatureService uploadSignatureService;
     private final MediaService mediaService;
 
     public InternalMediaController(InternalTokenValidator tokenValidator,
                                    ObjectSignatureService objectSignatureService,
+                                   PlaySignatureService playSignatureService,
                                    UploadSignatureService uploadSignatureService,
                                    MediaService mediaService) {
         this.tokenValidator = tokenValidator;
         this.objectSignatureService = objectSignatureService;
+        this.playSignatureService = playSignatureService;
         this.uploadSignatureService = uploadSignatureService;
         this.mediaService = mediaService;
     }
@@ -142,6 +148,20 @@ public class InternalMediaController {
     ) {
         tokenValidator.requireValid(token);
         return objectSignatureService.sign(fileId, ttl);
+    }
+
+    /**
+     * 生产播放签发：书城鉴权后调用，返回带 {@code e/exper/sign} 的 HLS playUrl。
+     * <p>仅 VIDEO；非视频 / 未处理完成时与公开面相同 4xx。
+     */
+    @GetMapping("/{fileId}/play-url")
+    public PlaySignatureResponse playUrl(
+            @PathVariable String fileId,
+            @RequestParam(required = false, defaultValue = "false") boolean preview,
+            @RequestHeader(value = InternalTokenValidator.HEADER, required = false) String token
+    ) {
+        tokenValidator.requireValid(token);
+        return playSignatureService.sign(fileId, preview);
     }
 
     private static AssetType parseAssetType(String raw) {
